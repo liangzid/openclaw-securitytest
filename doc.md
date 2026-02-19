@@ -178,3 +178,247 @@ src/
 - 还有 `security/` 目录，说明开发者还是考虑了安全的
 
 好，第一章就到这，我们下一章看 Gateway 是怎么启动的。
+
+---
+
+## 第二章：Gateway 是怎么启动的？—— 我来追踪一下 `openclaw gateway`
+
+行了，大概知道文件夹结构了。现在我们来搞明白：当你敲入 `openclaw gateway` 时，到底发生了什么？
+
+### 2.1 先看看入口：openclaw.mjs
+
+文件路径：`openclaw.mjs`
+
+这是 CLI 的入口文件，让我们看看：
+
+```javascript
+#!/usr/bin/env node
+
+import module from "node:module";
+
+// 启用编译缓存
+if (module.enableCompileCache && !process.env.NODE_DISABLE_COMPILE_CACHE) {
+  try {
+    module.enableCompileCache();
+  } catch {
+    // Ignore errors
+  }
+}
+
+// ... 一些警告过滤的代码 ...
+
+// 尝试导入编译后的入口文件
+if (await tryImport("./dist/entry.js")) {
+  // OK
+} else if (await tryImport("./dist/entry.mjs")) {
+  // OK
+} else {
+  throw new Error("openclaw: missing dist/entry.(m)js (build output).");
+}
+```
+
+哦，挺简单的，就是加载编译后的 `dist/entry.js` 或 `dist/entry.mjs`。这是生产环境的入口。开发环境应该是直接用 tsx 跑 TypeScript 的。
+
+### 2.2 CLI 命令是怎么注册的？
+
+我翻了一下 `src/cli/` 目录，发现命令是用 `commander` 库定义的。
+
+文件路径：`src/cli/program/build-program.ts`
+
+```typescript
+export function buildProgram() {
+  const program = new Command();
+  const ctx = createProgramContext();
+  const argv = process.argv;
+
+  setProgramContext(program, ctx);
+  configureProgramHelp(program, ctx);
+  registerPreActionHooks(program, ctx.programVersion);
+
+  registerProgramCommands(program, ctx, argv);  // ← 这里注册所有命令
+
+  return program;
+}
+```
+
+好，接下来看看 `gateway` 命令具体在哪。我找到了：
+
+文件路径：`src/cli/gateway-cli/register.ts`
+
+这里面注册了 `gateway` 命令，它最终会调用 `runGateway()` 函数。
+
+### 2.3 找到了！启动函数在这：src/gateway/server.impl.ts
+
+文件路径：`src/gateway/server.impl.ts`
+
+终于找到核心了！`startGatewayServer()` 这个函数就是 Gateway 的启动入口。
+
+**先看一眼函数签名：**
+
+```typescript
+export async function startGatewayServer(
+  port = 18789,
+  opts: GatewayServerOptions = {},
+): Promise<GatewayServer> {
+  // 哇，这个函数有 44KB 那么长！
+  // 让我慢慢读...
+}
+```
+
+44KB 的一个函数！这是要干嘛？我一开始以为看错了，后来确认了一下，真的是一个函数写了 44KB。这设计... 有点意思，一个函数干所有事情。
+
+让我们试着拆解一下它的步骤（我按代码顺序整理的）：
+
+#### 2.3.1 第一步：先把配置读了，还要迁移旧配置
+
+函数一开始先做这些：
+
+```typescript
+// 先把环境变量里的端口设上，让其他地方也能读到
+process.env.OPENCLAW_GATEWAY_PORT = String(port);
+
+// 读取配置文件快照
+let configSnapshot = await readConfigFileSnapshot();
+
+// 检查有没有 legacy 的老配置，有的话要迁移
+if (configSnapshot.legacyIssues.length > 0) {
+  // ... 迁移逻辑 ...
+  const { config: migrated, changes } = migrateLegacyConfig(configSnapshot.parsed);
+  await writeConfigFile(migrated);
+}
+```
+
+好，先把配置搞定，还要兼容旧版本的配置。
+
+#### 2.3.2 第二步：初始化运行时状态
+
+然后创建运行时状态：
+
+```typescript
+const runtimeState = createGatewayRuntimeState({
+  initialPort: port,
+  configSnapshot,
+  // ... 其他参数
+});
+```
+
+这个 `runtimeState` 是个什么东西？后面我再看，反正就是存各种运行时状态的。
+
+#### 2.3.3 第三步：启动 HTTP 和 WebSocket 服务器
+
+接下来是启动服务器：
+
+```typescript
+// 加载 TLS 配置（如果需要 HTTPS）
+const tlsRuntime = await loadGatewayTlsRuntime({
+  config: cfg,
+  log: logTls,
+});
+
+// 创建 HTTP 服务器
+// ...
+// 处理 WebSocket 升级
+// ...
+```
+
+这部分我们下一章再详细讲。
+
+#### 2.3.4 第四步：加载插件
+
+然后加载插件：
+
+```typescript
+const pluginRegistry = await loadGatewayPlugins({
+  cfg,
+  runtimeState,
+  deps,
+  log: logPlugins,
+});
+```
+
+插件系统，后面有机会再看。
+
+#### 2.3.5 第五步：启动各个渠道
+
+然后启动渠道管理器：
+
+```typescript
+const channelManager = createChannelManager({
+  cfg,
+  runtimeState,
+  pluginRegistry,
+  deps,
+  log: logChannels,
+});
+```
+
+渠道就是 WhatsApp、Telegram 这些，这部分也很重要，后面单独一章讲。
+
+#### 2.3.6 第六步：启动各种杂七杂八的服务
+
+然后启动一堆服务：
+
+```typescript
+// 定时任务
+const cronService = buildGatewayCronService({ ... });
+
+// 服务发现
+await startGatewayDiscovery({ ... });
+
+// 维护任务
+startGatewayMaintenanceTimers({ ... });
+
+// 边车服务
+await startGatewaySidecars({ ... });
+
+// 健康检查
+refreshGatewayHealthSnapshot({ ... });
+
+// 还有更多...
+```
+
+#### 2.3.7 第七步：健康检查和日志
+
+最后记录启动日志：
+
+```typescript
+logGatewayStartup({
+  cfg,
+  port: boundPort,
+  host: finalHost,
+  tlsRuntime,
+  hasActiveChannels: channelManager.hasActiveChannels(),
+  log,
+});
+```
+
+好家伙，这一个函数真是把所有事情都干了！
+
+### 2.4 启动时都能配什么？GatewayServerOptions
+
+让我们看看启动时可以传什么参数：
+
+```typescript
+export type GatewayServerOptions = {
+  bind?: GatewayBindMode;        // loopback/lan/tailnet/auto
+  host?: string;                  // 可以强行指定绑定地址
+  controlUiEnabled?: boolean;     // 要不要开控制 UI
+  openAiChatCompletionsEnabled?: boolean;
+  openResponsesEnabled?: boolean;
+  auth?: GatewayAuthConfig;
+  tailscale?: GatewayTailscaleConfig;
+  // ... 还有一些测试用的选项
+};
+```
+
+**注意了！** 这里有个很重要的点：默认绑定是 `loopback`，也就是 127.0.0.1 —— 这意味着默认只有这台机器自己能访问 Gateway，其他机器连不上。这个后面讲安全的时候还要说。
+
+### 2.5 这章看完的感觉
+
+- Gateway 启动入口是 `startGatewayServer()`，在 `src/gateway/server.impl.ts`
+- 默认端口是 18789
+- 默认只监听 127.0.0.1（也就是只有这台机器自己能访问）
+- 启动流程大概是：读配置 → 初始化状态 → 启服务器 → 加载插件 → 启动渠道 → 启动各种服务
+- 这个函数真的太长了（44KB），什么都干
+
+好，第二章就到这。下一章我们详细看 HTTP 和 WebSocket 服务器是怎么实现的。
