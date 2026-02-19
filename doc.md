@@ -422,3 +422,191 @@ export type GatewayServerOptions = {
 - 这个函数真的太长了（44KB），什么都干
 
 好，第二章就到这。下一章我们详细看 HTTP 和 WebSocket 服务器是怎么实现的。
+
+---
+
+## 第三章：Gateway 服务器里面都有啥？—— HTTP、WebSocket 和认证
+
+上一章我们看到 Gateway 启动了 HTTP 和 WebSocket 服务器，这一章我们详细挖挖它们是怎么实现的。
+
+### 3.1 HTTP 服务器：src/gateway/server-http.ts
+
+文件路径：`src/gateway/server-http.ts`
+
+这个文件定义了 HTTP 服务器的行为。我翻了一下，它处理的路由还挺多的，让我整理一下：
+
+| 路径 | 功能 | 说明 |
+|------|------|------|
+| `/` | 重定向 | 重定向到 `/ui` 或其他 |
+| `/ui/*` | 控制 UI | Web 管理界面 |
+| `/ws` | WebSocket | WebSocket 升级端点 |
+| `/v1/chat/completions` | OpenAI API | OpenAI 兼容 API |
+| `/v1/responses` | OpenResponses API | 另一个 API |
+| `/hooks/*` | Webhooks | 入站 Webhook |
+| `/tools/*` | 工具调用 | 工具调用 HTTP API |
+| `/canvas/*` | Canvas | Canvas 相关 |
+| `/browser/*` | 浏览器 | 浏览器控制 |
+
+一个 HTTP 请求进来时，大概是这么个流程：
+1. 先做认证检查（`authorizeGatewayConnect()`）
+2. 然后路由匹配
+3. 最后执行对应的处理器
+
+### 3.2 认证系统：src/gateway/auth.ts
+
+文件路径：`src/gateway/auth.ts`
+
+这个文件很重要！我仔细读了一下，这是 Gateway 的保安 —— 决定谁能进来，谁不能进来。
+
+#### 3.2.1 都支持哪几种认证方式？
+
+先看类型定义：
+
+```typescript
+export type ResolvedGatewayAuthMode = "none" | "token" | "password" | "trusted-proxy";
+```
+
+四种模式：
+- `none` —— 无认证（不推荐！这相当于大门敞开）
+- `token` —— Token 认证（用一个 secret token）
+- `password` —— 密码认证
+- `trusted-proxy` —— 受信任的代理（比如 Tailscale）
+
+还有认证结果的类型：
+
+```typescript
+export type GatewayAuthResult = {
+  ok: boolean;
+  method?: "none" | "token" | "password" | "tailscale" | "device-token" | "trusted-proxy";
+  user?: string;
+  reason?: string;
+  rateLimited?: boolean;      // 是否被限流了
+  retryAfterMs?: number;      // 限流的话要等多久
+};
+```
+
+#### 3.2.2 认证流程：authorizeGatewayConnect()
+
+这个函数是核心，让我们看看它都做了哪些检查（按代码顺序）：
+
+1. 先检查是不是"本地直接请求"（`isLocalDirectRequest()`）—— 如果是，直接放行
+2. 检查有没有 Token 或 Password —— 有就验证
+3. 如果是 Tailscale，检查 Tailscale 身份
+4. 检查速率限制 —— 试错太多次会被限流
+
+这个设计挺合理的：本地访问最方便，不用认证；远程访问必须认证。
+
+#### 3.2.3 什么算是"本地直接请求"？
+
+这个函数 `isLocalDirectRequest()` 很有意思，让我们看看代码：
+
+```typescript
+export function isLocalDirectRequest(
+  req?: IncomingMessage,
+  trustedProxies?: string[],
+): boolean {
+  // 1. 检查客户端 IP 是不是 loopback 地址
+  const clientIp = resolveRequestClientIp(req, trustedProxies) ?? "";
+  if (!isLoopbackAddress(clientIp)) {
+    return false;
+  }
+
+  // 2. 检查 Host 头
+  const host = getHostName(req.headers?.host);
+  const hostIsLocal = host === "localhost" || host === "127.0.0.1" || host === "::1";
+  const hostIsTailscaleServe = host.endsWith(".ts.net");
+
+  // 3. 检查有没有 forwarded 头
+  const hasForwarded = Boolean(
+    req.headers?.["x-forwarded-for"] ||
+    req.headers?.["x-real-ip"] ||
+    req.headers?.["x-forwarded-host"],
+  );
+
+  // 4. 检查 remote 是不是受信任的代理
+  const remoteIsTrustedProxy = isTrustedProxyAddress(req.socket?.remoteAddress, trustedProxies);
+
+  // 最终判断
+  return (hostIsLocal || hostIsTailscaleServe) && (!hasForwarded || remoteIsTrustedProxy);
+}
+```
+
+关键点我帮你划出来了：
+- 客户端 IP 必须是 loopback 地址（127.0.0.1 或 ::1）
+- Host 头必须是 localhost/127.0.0.1/::1，或者是 .ts.net（Tailscale）
+- 如果有 forwarded 头，那必须来自受信任的代理
+
+这就解释了为什么默认绑定 127.0.0.1 是安全的 —— 只有这台机器自己能访问。
+
+### 3.3 WebSocket 服务器：src/gateway/server/ws-connection.ts
+
+文件路径：`src/gateway/server/ws-connection.ts`
+
+WebSocket 是 Gateway 的主要通信方式。毕竟 HTTP 是一问一答，而 WebSocket 可以双向实时通信，更适合做控制平面。
+
+我看了一下，WebSocket 消息有定义好的协议格式，在 `src/gateway/protocol/` 目录里。这个后面有机会再细说。
+
+当一个 WebSocket 消息到达时，大概是这么处理的：
+1. 解析帧
+2. 路由到对应的方法处理器
+3. 执行方法
+4. 返回结果
+
+### 3.4 Gateway 方法：src/gateway/server-methods/
+
+文件路径：`src/gateway/server-methods/`
+
+这是 Gateway 的"API 端点"目录，每个文件对应一组方法。我数了一下，还挺多的：
+
+| 文件 | 方法组 | 功能 |
+|------|--------|------|
+| `agent.ts` | `agent.*` | AI 代理调用 |
+| `agents.ts` | `agents.*` | 代理管理 |
+| `browser.ts` | `browser.*` | 浏览器控制 |
+| `channels.ts` | `channels.*` | 渠道管理 |
+| `chat.ts` | `chat.*` | 聊天 |
+| `config.ts` | `config.*` | 配置管理 |
+| `cron.ts` | `cron.*` | 定时任务 |
+| `exec-approval.ts` | - | 执行审批 |
+| `nodes.ts` | `nodes.*` | 节点管理 |
+| `sessions.ts` | `sessions.*` | 会话管理 |
+| ... | ... | ... |
+
+这些方法就是 Gateway 提供的所有功能了，后面我们会挑几个重要的看。
+
+### 3.5 网络绑定：src/gateway/net.ts
+
+文件路径：`src/gateway/net.ts`
+
+这个文件决定了 Gateway 怎么绑定到网络接口。
+
+#### 3.5.1 都有哪几种绑定模式？
+
+```typescript
+type GatewayBindMode = "loopback" | "lan" | "tailnet" | "auto";
+```
+
+四种模式：
+- `loopback` —— 只绑定 127.0.0.1（默认，最安全）
+- `lan` —— 绑定 0.0.0.0（局域网可访问，谨慎使用）
+- `tailnet` —— 只绑定 Tailscale 地址
+- `auto` —— 自动选择（优先 loopback）
+
+**划重点：默认是 `loopback`！** 这意味着默认只有这台机器自己能访问 Gateway，其他机器连不上。这个设计很安全。
+
+这个文件还有一些有用的工具函数：
+- `isLoopbackAddress()` —— 检查是不是回环地址
+- `isPrivateAddress()` —— 检查是不是私有地址
+- `isPrivateOrLoopbackAddress()` —— 两者任一
+- `resolveGatewayClientIp()` —— 解析客户端真实 IP（处理代理的情况）
+
+### 3.6 这章看完的感觉
+
+- Gateway 同时提供 HTTP 和 WebSocket 服务
+- 默认只监听 127.0.0.1，需要显式配置才能从其他地址访问
+- 认证系统支持多种模式：token、password、trusted-proxy、tailscale
+- 本地请求（127.0.0.1）不需要认证，这个设计很方便也很安全
+- WebSocket 是主要通信方式，有定义良好的协议
+- `server-methods/` 目录包含所有 API 方法实现
+
+好，第三章就到这。下一章我们看渠道系统 —— 怎么连 WhatsApp、Telegram 这些。
