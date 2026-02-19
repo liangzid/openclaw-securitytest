@@ -1,0 +1,736 @@
+#+TITLE: OpenClaw 设计细节（三）：会话管理、定时任务、节点系统、配置系统
+#+AUTHOR: 学习者笔记
+
+* 第六章 会话管理系统
+
+这一章我们来聊聊 OpenClaw 的会话管理系统。会话（Session）是用户和 AI 对话的基本单位——你和 AI 的每一次对话链，都会对应一个 session。
+
+** 6.1 会话的基本概念
+
+在 OpenClaw 里，session 不是简单的内存对象，而是持久化到磁盘的。让我们看看核心数据结构：
+
+#+BEGIN_SRC typescript
+// src/config/sessions/types.ts 相关定义
+export type SessionEntry = {
+  sessionId: string;
+  sessionFile?: string;
+  updatedAt: number;
+  systemSent?: boolean;
+  abortedLastRun?: boolean;
+  thinkingLevel?: string;
+  verboseLevel?: string;
+  reasoningLevel?: string;
+  ttsAuto?: TtsAutoMode;
+  modelOverride?: string;
+  providerOverride?: string;
+  totalTokens?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  contextTokens?: number;
+  compactionCount?: number;
+  // ... 更多字段
+};
+#+END_SRC
+
+每个会话都有：
+- =sessionId=：唯一标识符（UUID）
+- =sessionFile=：会话记录文件路径（JSONL 格式）
+- =updatedAt=：最后更新时间戳
+- =thinkingLevel=、=verboseLevel=、=reasoningLevel=：用户设置的偏好
+- =modelOverride=、=providerOverride=：模型覆盖设置
+- =totalTokens= 等：token 使用统计
+- =compactionCount=：会话压缩次数（历史消息压缩）
+
+** 6.2 会话文件存储
+
+会话记录不是存在数据库里，而是直接存 JSONL 文件。这个设计挺有意思的：
+
+#+BEGIN_SRC typescript
+// src/config/sessions/paths.ts 节选
+export function resolveSessionTranscriptPath(
+  sessionId: string,
+  agentId: string,
+  threadId?: string | null,
+): string {
+  const sessionsDir = ensureSessionsDir(agentId);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return path.join(sessionsDir, `${timestamp}_${sessionId}.jsonl`);
+}
+#+END_SRC
+
+文件名格式是 ={timestamp}_{sessionId}.jsonl=，比如：
+=2026-02-19T10-30-00-000Z_a1b2c3d4.jsonl=
+
+JSONL 格式的好处是：
+1. 可以增量写入（append-only）
+2. 损坏了容易修复（一行一行解析）
+3. 可以直接用文本编辑器查看
+
+** 6.3 会话初始化流程
+
+我翻了一下 =src/auto-reply/reply/session.ts=，里面的 =initSessionState= 函数是会话初始化的核心，有 470 多行！让我们梳理一下主要流程：
+
+1. **确定目标会话 key**：区分普通消息和原生 slash 命令
+2. **加载 session store**：从磁盘读取会话索引
+3. **检查重置触发器**：比如 =/new=、=/reset= 命令
+4. **计算会话新鲜度**：判断是否需要新建会话
+5. **构建 session entry**：合并旧状态和新设置
+6. **持久化到 store**：更新会话索引文件
+7. **触发插件钩子**：=session_start=、=session_end=
+
+让我们看看重置触发器的逻辑：
+
+#+BEGIN_SRC typescript
+// src/auto-reply/reply/session.ts 节选
+const DEFAULT_RESET_TRIGGERS = ["/new", "/reset", "/clear"];
+
+// 检查是否触发重置
+for (const trigger of resetTriggers) {
+  if (!trigger) continue;
+  if (!resetAuthorized) break;
+
+  const triggerLower = trigger.toLowerCase();
+  if (trimmedBodyLower === triggerLower || strippedForResetLower === triggerLower) {
+    isNewSession = true;
+    bodyStripped = "";
+    resetTriggered = true;
+    break;
+  }
+  // 支持 "/new 你好" 这种格式
+  const triggerPrefixLower = `${triggerLower} `;
+  if (trimmedBodyLower.startsWith(triggerPrefixLower) ||
+      strippedForResetLower.startsWith(triggerPrefixLower)) {
+    isNewSession = true;
+    bodyStripped = strippedForReset.slice(trigger.length).trimStart();
+    resetTriggered = true;
+    break;
+  }
+}
+#+END_SRC
+
+** 6.4 会话作用域（Scope）
+
+会话的 scope 决定了什么情况下共享同一个会话。有几种模式：
+
+- =per-sender=：每个发送者独立会话（默认）
+- =per-channel=：整个频道共享一个会话
+- =per-group=：群组内共享会话
+
+配置在 =config.session.scope=：
+
+#+BEGIN_SRC typescript
+// src/config/sessions/session-key.ts
+export function resolveSessionKey(
+  scope: SessionScope,
+  ctx: MsgContext,
+  mainKey: string | null,
+): string {
+  switch (scope) {
+    case "per-channel":
+      return `${ctx.Provider}:${ctx.OriginatingChannel}:${ctx.To}:${mainKey ?? "default"}`;
+    case "per-group":
+      // ... 群组逻辑
+    case "per-sender":
+    default:
+      return `${ctx.Provider}:${ctx.OriginatingChannel}:${ctx.From}:${mainKey ?? "default"}`;
+  }
+}
+#+END_SRC
+
+** 6.5 会话重置策略
+
+会话不是永远存在的，可以根据时间自动重置。策略包括：
+
+- =never=：从不自动重置
+- =after=：指定时间后重置
+- =daily=：每天重置
+- =weekly=：每周重置
+
+#+BEGIN_SRC typescript
+// src/config/sessions/reset.ts
+export function evaluateSessionFreshness(params: {
+  updatedAt: number;
+  now: number;
+  policy: SessionResetPolicy;
+}): { fresh: boolean; reason?: string } {
+  // 检查会话是否还"新鲜"
+  // fresh: true → 继续用旧会话
+  // fresh: false → 创建新会话
+}
+#+END_SRC
+
+** 6.6 会话分叉（Fork）
+
+OpenClaw 支持从父会话分叉出子会话，继承历史消息：
+
+#+BEGIN_SRC typescript
+// src/auto-reply/reply/session.ts 节选
+function forkSessionFromParent(params: {
+  parentEntry: SessionEntry;
+  agentId: string;
+  sessionsDir: string;
+}): { sessionId: string; sessionFile: string } | null {
+  const parentSessionFile = resolveSessionFilePath(...);
+  const manager = SessionManager.open(parentSessionFile);
+  const leafId = manager.getLeafId();
+
+  if (leafId) {
+    const sessionFile = manager.createBranchedSession(leafId);
+    const sessionId = manager.getSessionId();
+    return { sessionId, sessionFile };
+  }
+  // ...
+}
+#+END_SRC
+
+这个功能是通过 @mariozechner/pi-coding-agent 库实现的，我们后面再说。
+
+** 6.7 会话压缩（Compaction）
+
+随着对话进行，会话历史会越来越长。OpenClaw 会定期压缩历史消息，避免上下文溢出：
+
+- =compactionCount=：记录压缩次数
+- =memoryFlushCompactionCount=：记忆刷新时的压缩计数
+- =memoryFlushAt=：记忆刷新时间戳
+
+压缩逻辑会把旧的对话消息合并成摘要，节省 token。
+
+* 第七章 定时任务系统（Cron）
+
+OpenClaw 有一个完整的定时任务系统，可以让 AI 在指定时间自动执行任务。比如：
+- 每天早上 9 点提醒天气
+- 每小时检查一次服务器状态
+- 每周生成周报
+
+** 7.1 定时任务类型
+
+定时任务支持三种调度方式：
+
+1. **Cron 表达式**：标准 cron 格式（=* * * * *=）
+2. **固定间隔**：每 X 毫秒执行一次
+3. **一次性执行**：在指定时间点执行一次
+
+#+BEGIN_SRC typescript
+// src/cron/types.ts
+export type CronSchedule =
+  | { kind: "cron"; expr: string; tz?: string }
+  | { kind: "every"; everyMs: number; anchorMs?: number }
+  | { kind: "at"; at: string };
+#+END_SRC
+
+** 7.2 调度计算
+
+我看了 =src/cron/schedule.ts=，里面的 =computeNextRunAtMs= 函数负责计算下次执行时间：
+
+#+BEGIN_SRC typescript
+// src/cron/schedule.ts
+export function computeNextRunAtMs(
+  schedule: CronSchedule,
+  nowMs: number
+): number | undefined {
+  if (schedule.kind === "at") {
+    // 一次性任务：解析时间，检查是否在未来
+    const atMs = parseAbsoluteTimeMs(schedule.at);
+    return atMs > nowMs ? atMs : undefined;
+  }
+
+  if (schedule.kind === "every") {
+    // 固定间隔：计算下一个间隔点
+    const everyMs = Math.max(1, Math.floor(schedule.everyMs));
+    const anchor = Math.max(0, Math.floor(schedule.anchorMs ?? nowMs));
+    if (nowMs < anchor) return anchor;
+    const elapsed = nowMs - anchor;
+    const steps = Math.max(1, Math.floor((elapsed + everyMs - 1) / everyMs));
+    return anchor + steps * everyMs;
+  }
+
+  // Cron 表达式：用 croner 库解析
+  const expr = schedule.expr.trim();
+  const cron = new Cron(expr, {
+    timezone: resolveCronTimezone(schedule.tz),
+    catch: false,
+  });
+  const nowSecondMs = Math.floor(nowMs / 1000) * 1000;
+  const next = cron.nextRun(new Date(nowSecondMs));
+  const nextMs = next?.getTime();
+  return Number.isFinite(nextMs) && nextMs > nowSecondMs ? nextMs : undefined;
+}
+#+END_SRC
+
+注意那个 timezone 处理——cron 任务支持时区，这很重要。
+
+** 7.3 Cron 服务架构
+
+CronService 是定时任务的核心类：
+
+#+BEGIN_SRC typescript
+// src/cron/service.ts
+export class CronService {
+  private readonly state;
+
+  constructor(deps: CronServiceDeps) {
+    this.state = createCronServiceState(deps);
+  }
+
+  async start() { await ops.start(this.state); }
+  stop() { ops.stop(this.state); }
+  async status() { return await ops.status(this.state); }
+  async list(opts?: { includeDisabled?: boolean }) {
+    return await ops.list(this.state, opts);
+  }
+  async add(input: CronJobCreate) { return await ops.add(this.state, input); }
+  async update(id: string, patch: CronJobPatch) {
+    return await ops.update(this.state, id, patch);
+  }
+  async remove(id: string) { return await ops.remove(this.state, id); }
+  async run(id: string, mode?: "due" | "force") {
+    return await ops.run(this.state, id, mode);
+  }
+  wake(opts: { mode: "now" | "next-heartbeat"; text: string }) {
+    return ops.wakeNow(this.state, opts);
+  }
+}
+#+END_SRC
+
+设计很清晰：
+- =state=：封装内部状态
+- =ops=：具体操作函数（start/stop/list/add/update/remove/run）
+- 分离关注点，状态和操作分开
+
+** 7.4 定时任务的数据结构
+
+#+BEGIN_SRC typescript
+// src/cron/types.ts
+export type CronJob = {
+  id: string;
+  name?: string;
+  description?: string;
+  schedule: CronSchedule;
+  nextRunAtMs?: number;
+  lastRunAtMs?: number;
+  lastError?: string;
+  enabled: boolean;
+  createdAtMs: number;
+  updatedAtMs: number;
+  // 任务内容
+  agentId?: string;
+  prompt?: string;
+  // ...
+};
+#+END_SRC
+
+任务触发时，会创建一个隔离的 agent session，执行指定的 prompt。
+
+** 7.5 Gateway 集成
+
+Cron 服务通过 Gateway 暴露 API：
+
+- =src/gateway/server-cron.ts=：HTTP 端点
+- =src/gateway/server-methods/cron.ts=：方法处理
+- =src/gateway/protocol/schema/cron.ts=：协议 schema
+
+还有专门的 CLI：=src/cli/cron-cli.ts=
+
+* 第八章 节点系统（Nodes）
+
+Node 系统是 OpenClaw 一个很有意思的设计——它允许远程设备（比如手机、平板）连接到 OpenClaw，提供额外的能力。
+
+** 8.1 什么是 Node？
+
+Node 是通过 WebSocket 连接到 Gateway 的远程客户端，可以：
+- 提供本地功能（摄像头、屏幕、麦克风）
+- 执行本地命令
+- 推送事件给 OpenClaw
+
+比如你有个手机 App 连到 OpenClaw，AI 就可以通过这个 Node 调用手机摄像头拍照。
+
+** 8.2 Node 注册表
+
+NodeRegistry 管理所有连接的节点：
+
+#+BEGIN_SRC typescript
+// src/gateway/node-registry.ts
+export class NodeRegistry {
+  private nodesById = new Map<string, NodeSession>();
+  private nodesByConn = new Map<string, string>();
+  private pendingInvokes = new Map<string, PendingInvoke>();
+
+  // 注册新节点
+  register(client: GatewayWsClient, opts: { remoteIp?: string }) {
+    const nodeId = connect.device?.id ?? connect.client.id;
+    const session: NodeSession = {
+      nodeId,
+      connId: client.connId,
+      client,
+      displayName: connect.client.displayName,
+      platform: connect.client.platform,
+      version: connect.client.version,
+      caps: Array.isArray(connect.caps) ? connect.caps : [],
+      commands: Array.isArray((connect as { commands?: string[] }).commands)
+        ? ((connect as { commands?: string[] }).commands ?? [])
+        : [],
+      permissions: (connect as { permissions?: Record<string, boolean> }).permissions,
+      pathEnv: (connect as { pathEnv?: string }).pathEnv,
+      connectedAtMs: Date.now(),
+    };
+    this.nodesById.set(nodeId, session);
+    this.nodesByConn.set(client.connId, nodeId);
+    return session;
+  }
+
+  // 注销节点
+  unregister(connId: string): string | null {
+    const nodeId = this.nodesByConn.get(connId);
+    if (!nodeId) return null;
+    this.nodesByConn.delete(connId);
+    this.nodesById.delete(nodeId);
+    // 取消所有待处理的调用
+    for (const [id, pending] of this.pendingInvokes.entries()) {
+      if (pending.nodeId !== nodeId) continue;
+      clearTimeout(pending.timer);
+      pending.reject(new Error(`node disconnected (${pending.command})`));
+      this.pendingInvokes.delete(id);
+    }
+    return nodeId;
+  }
+
+  // 列出连接的节点
+  listConnected(): NodeSession[] {
+    return [...this.nodesById.values()];
+  }
+
+  // 获取节点
+  get(nodeId: string): NodeSession | undefined {
+    return this.nodesById.get(nodeId);
+  }
+}
+#+END_SRC
+
+** 8.3 Node 调用机制
+
+调用节点命令是异步的，带超时：
+
+#+BEGIN_SRC typescript
+// src/gateway/node-registry.ts
+async invoke(params: {
+  nodeId: string;
+  command: string;
+  params?: unknown;
+  timeoutMs?: number;
+  idempotencyKey?: string;
+}): Promise<NodeInvokeResult> {
+  const node = this.nodesById.get(params.nodeId);
+  if (!node) {
+    return { ok: false, error: { code: "NOT_CONNECTED", message: "node not connected" } };
+  }
+
+  const requestId = randomUUID();
+  const payload = {
+    id: requestId,
+    nodeId: params.nodeId,
+    command: params.command,
+    paramsJSON: "params" in params && params.params !== undefined
+      ? JSON.stringify(params.params)
+      : null,
+    timeoutMs: params.timeoutMs,
+    idempotencyKey: params.idempotencyKey,
+  };
+
+  const ok = this.sendEventToSession(node, "node.invoke.request", payload);
+  if (!ok) {
+    return { ok: false, error: { code: "UNAVAILABLE", message: "failed to send invoke to node" } };
+  }
+
+  const timeoutMs = typeof params.timeoutMs === "number" ? params.timeoutMs : 30_000;
+  return await new Promise<NodeInvokeResult>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      this.pendingInvokes.delete(requestId);
+      resolve({ ok: false, error: { code: "TIMEOUT", message: "node invoke timed out" } });
+    }, timeoutMs);
+    this.pendingInvokes.set(requestId, {
+      nodeId: params.nodeId,
+      command: params.command,
+      resolve,
+      reject,
+      timer,
+    });
+  });
+}
+#+END_SRC
+
+调用流程：
+1. 生成 requestId
+2. 发送 =node.invoke.request= 事件到节点
+3. 等待 =node.invoke.result= 事件回来
+4. 超时自动 reject
+
+** 8.4 Node 能力（Capabilities）
+
+节点连接时会声明自己的能力（caps）：
+
+#+BEGIN_SRC typescript
+// 常见的 capabilities
+"screen"      // 屏幕共享/截图
+"camera"      // 摄像头
+"microphone"  // 麦克风
+"canvas"      // 画布操作
+"shell"       // 执行 shell 命令
+"filesystem"  // 文件系统访问
+// ...
+#+END_SRC
+
+AI 可以通过这些能力来调用节点功能。
+
+** 8.5 Node 事件系统
+
+节点和 Gateway 之间是双向通信的：
+
+- Gateway → Node：调用命令（=node.invoke.request=）
+- Node → Gateway：返回结果（=node.invoke.result=）
+- Node → Gateway：推送事件（比如传感器数据）
+
+相关文件：
+- =src/gateway/server-node-events.ts=：节点事件处理
+- =src/gateway/server-node-subscriptions.ts=：节点订阅管理
+
+* 第九章 配置系统
+
+OpenClaw 的配置系统设计得很完善，支持多层级、验证、迁移、环境变量替换等。
+
+** 9.1 配置文件格式
+
+配置文件是 JSON5 格式（不是纯 JSON），支持注释、尾随逗号等：
+
+#+BEGIN_SRC json5
+// openclaw.json5
+{
+  // 模型配置
+  models: {
+    default: "claude-3-5-sonnet",
+    providers: {
+      anthropic: {
+        apiKey: "${ANTHROPIC_API_KEY}",
+      },
+    },
+  },
+
+  // 会话配置
+  session: {
+    scope: "per-sender",
+    resetPolicy: {
+      kind: "daily",
+      time: "04:00",
+    },
+  },
+
+  // 渠道配置
+  channels: {
+    whatsapp: {
+      // ...
+    },
+  },
+}
+#+END_SRC
+
+** 9.2 配置类型定义
+
+OpenClawConfig 是根类型，结构非常清晰：
+
+#+BEGIN_SRC typescript
+// src/config/types.openclaw.ts
+export type OpenClawConfig = {
+  meta?: {
+    lastTouchedVersion?: string;
+    lastTouchedAt?: string;
+  };
+  auth?: AuthConfig;
+  env?: {
+    shellEnv?: { enabled?: boolean; timeoutMs?: number };
+    vars?: Record<string, string>;
+  };
+  logging?: LoggingConfig;
+  update?: { channel?: "stable" | "beta" | "dev"; checkOnStart?: boolean };
+  browser?: BrowserConfig;
+  ui?: {
+    seamColor?: string;
+    assistant?: { name?: string; avatar?: string };
+  };
+  skills?: SkillsConfig;
+  plugins?: PluginsConfig;
+  models?: ModelsConfig;
+  nodeHost?: NodeHostConfig;
+  agents?: AgentsConfig;
+  tools?: ToolsConfig;
+  bindings?: AgentBinding[];
+  broadcast?: BroadcastConfig;
+  audio?: AudioConfig;
+  messages?: MessagesConfig;
+  commands?: CommandsConfig;
+  approvals?: ApprovalsConfig;
+  session?: SessionConfig;
+  web?: WebConfig;
+  channels?: ChannelsConfig;
+  cron?: CronConfig;
+  hooks?: HooksConfig;
+  discovery?: DiscoveryConfig;
+  canvasHost?: CanvasHostConfig;
+  talk?: TalkConfig;
+  gateway?: GatewayConfig;
+  memory?: MemoryConfig;
+};
+#+END_SRC
+
+每个子配置都在单独的文件里：
+- =types.agents.ts=
+- =types.auth.ts=
+- =types.channels.ts=
+- =types.cron.ts=
+- =types.models.ts=
+- ... 等等
+
+** 9.3 配置加载流程
+
+配置加载不是简单的 =JSON.parse=，而是一个完整的 pipeline：
+
+1. 读取原始文件
+2. 解析 JSON5
+3. 解析 =$include= 指令（包含其他配置文件）
+4. 替换 =${ENV_VAR}= 环境变量
+5. 应用运行时覆盖
+6. 应用默认值
+7. 验证配置
+8. 迁移旧版本配置
+
+相关文件：
+- =src/config/io.ts=：文件读写
+- =src/config/includes-scan.ts=：= $include= 处理
+- =src/config/env-substitution.ts=：环境变量替换
+- =src/config/merge-config.ts=：合并配置
+- =src/config/legacy-migrate.ts=：旧配置迁移
+- =src/config/validation.ts=：配置验证
+
+** 9.4 配置验证
+
+用 Zod 做 schema 验证：
+
+#+BEGIN_SRC typescript
+// src/config/zod-schema.ts（节选）
+export const OpenClawSchema = z.object({
+  meta: z.object({
+    lastTouchedVersion: z.string().optional(),
+    lastTouchedAt: z.string().optional(),
+  }).optional(),
+
+  session: z.object({
+    scope: z.enum(["per-sender", "per-channel", "per-group"]).optional(),
+    mainKey: z.string().optional(),
+    store: z.string().optional(),
+    resetTriggers: z.array(z.string()).optional(),
+    // ...
+  }).optional(),
+
+  models: z.object({
+    default: z.string().optional(),
+    providers: z.record(z.object({
+      apiKey: z.string().optional(),
+      baseUrl: z.string().optional(),
+      // ...
+    })).optional(),
+  }).optional(),
+
+  // ... 更多字段
+});
+#+END_SRC
+
+验证失败会返回详细的问题列表：
+
+#+BEGIN_SRC typescript
+export type ConfigValidationIssue = {
+  path: string;
+  message: string;
+};
+#+END_SRC
+
+** 9.5 配置快照
+
+为了安全地修改配置，OpenClaw 用了"快照"的概念：
+
+#+BEGIN_SRC typescript
+// src/config/types.openclaw.ts
+export type ConfigFileSnapshot = {
+  path: string;
+  exists: boolean;
+  raw: string | null;
+  parsed: unknown;
+  // 解析后，但在应用默认值之前
+  resolved: OpenClawConfig;
+  valid: boolean;
+  // 最终配置（应用了默认值）
+  config: OpenClawConfig;
+  hash?: string;
+  issues: ConfigValidationIssue[];
+  warnings: ConfigValidationIssue[];
+  legacyIssues: LegacyConfigIssue[];
+};
+#+END_SRC
+
+这样可以在写入前预览变更，避免写错配置。
+
+** 9.6 运行时覆盖
+
+配置可以在运行时通过环境变量覆盖：
+
+#+BEGIN_SRC bash
+# 覆盖模型提供商的 API key
+OPENCLAW__models__providers__anthropic__apiKey=sk-ant-... openclaw
+#+END_SRC
+
+格式是 =OPENCLAW__path__to__field=value=。
+
+相关代码在 =src/config/runtime-overrides.ts=。
+
+** 9.7 配置缓存
+
+为了避免反复读取和解析配置，有缓存机制：
+
+#+BEGIN_SRC typescript
+// src/config/io.ts
+let cachedConfig: OpenClawConfig | undefined;
+let cachedConfigPath: string | undefined;
+
+export function clearConfigCache() {
+  cachedConfig = undefined;
+  cachedConfigPath = undefined;
+}
+
+export function loadConfig(...) {
+  // 检查缓存是否有效
+  // 无效则重新加载
+}
+#+END_SRC
+
+* 第十章 总结
+
+这三部分文档梳理了 OpenClaw 的核心设计：
+
+1. **第一部分（doc.org）**：
+   - 项目整体架构
+   - Gateway 启动流程
+   - HTTP、WebSocket、认证
+   - 渠道系统
+   - 安全审计
+
+2. **第二部分（doc2.org）**：
+   - AI Agent 实现
+   - 系统提示词构建
+   - Skills 系统
+   - Memory 系统
+   - 插件系统
+
+3. **第三部分（doc3.org，即本文）**：
+   - 会话管理系统
+   - 定时任务系统
+   - 节点系统
+   - 配置系统
+
+OpenClaw 是一个设计精良的项目，代码结构清晰，模块划分合理，值得深入学习。希望这些笔记对你有帮助！
