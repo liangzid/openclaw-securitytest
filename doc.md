@@ -610,3 +610,181 @@ type GatewayBindMode = "loopback" | "lan" | "tailnet" | "auto";
 - `server-methods/` 目录包含所有 API 方法实现
 
 好，第三章就到这。下一章我们看渠道系统 —— 怎么连 WhatsApp、Telegram 这些。
+
+---
+
+## 第四章：渠道（Channels）是怎么工作的？—— WhatsApp、Telegram 等逐个看
+
+这一章是我最好奇的部分：OpenClaw 是怎么连这么多消息渠道的？让我们逐个挖。
+
+### 4.1 先看整体结构
+
+在 OpenClaw 中，每个渠道都是相对独立的模块，但它们共享一些公共的抽象。先看看渠道相关的目录：
+
+```
+src/
+├── channels/           # 渠道抽象和公共代码
+├── discord/            # Discord 具体实现
+├── slack/              # Slack 具体实现
+├── telegram/           # Telegram 具体实现
+├── signal/             # Signal 具体实现
+├── web/                # WhatsApp Web 实现
+├── imessage/           # iMessage 实现
+├── line/               # Line 实现
+└── ...（更多渠道）
+```
+
+每个渠道一个目录，这个设计很清晰。
+
+### 4.2 WhatsApp 渠道：src/web/
+
+文件路径：`src/web/`
+
+WhatsApp 是通过 WhatsApp Web 实现的，用的是 `@whiskeysockets/baileys` 这个库。
+
+先看看 `src/web/` 的目录结构：
+
+```
+src/web/
+├── inbound/              # 入站消息处理
+│   ├── access-control.ts # 访问控制！这个很重要
+│   ├── monitor.ts        # 监控
+│   └── send-api.ts       # 发送 API
+├── outbound.ts           # 出站消息
+├── monitor.ts            # 主监控器
+├── session.ts            # 会话管理
+├── login.ts              # 登录
+└── ...
+```
+
+#### 4.2.1 访问控制：src/web/inbound/access-control.ts
+
+文件路径：`src/web/inbound/access-control.ts`
+
+这个文件很有意思！我仔细读了一下，它决定谁的消息会被处理，谁的会被忽略。让我们看看核心逻辑：
+
+```typescript
+export async function checkInboundAccessControl(params: {
+  accountId: string;
+  from: string;
+  selfE164: string | null;
+  senderE164: string | null;
+  group: boolean;
+  pushName?: string;
+  isFromMe: boolean;
+  // ... 更多参数
+}): Promise<InboundAccessControlResult> {
+  const cfg = loadConfig();
+  const account = resolveWhatsAppAccount({ cfg, accountId: params.accountId });
+
+  // dmPolicy 默认是 "pairing"
+  const dmPolicy = account.dmPolicy ?? "pairing";
+
+  // 从配置和存储中读取 allowFrom 白名单
+  const configuredAllowFrom = account.allowFrom;
+  const storeAllowFrom = await readChannelAllowFromStore("whatsapp").catch(() => []);
+  const combinedAllowFrom = Array.from(
+    new Set([...(configuredAllowFrom ?? []), ...storeAllowFrom]),
+  );
+
+  // 如果没有配置白名单，默认只允许自己给自己发消息
+  const defaultAllowFrom =
+    combinedAllowFrom.length === 0 && params.selfE164
+      ? [params.selfE164]
+      : undefined;
+
+  const allowFrom = combinedAllowFrom.length > 0
+    ? combinedAllowFrom
+    : defaultAllowFrom;
+
+  // ... 中间一堆检查逻辑 ...
+
+  // DM 访问控制（默认是 "pairing" 模式）
+  if (!params.group) {
+    // 如果不是 "open" 模式，而且不是自己
+    if (dmPolicy !== "open" && !isSamePhone) {
+      const candidate = params.from;
+      const allowed =
+        dmHasWildcard ||
+        (normalizedAllowFrom.length > 0 && normalizedAllowFrom.includes(candidate));
+
+      // 如果不在白名单里
+      if (!allowed) {
+        // 如果是 pairing 模式，给对方发一个配对码
+        if (dmPolicy === "pairing") {
+          const { code, created } = await upsertChannelPairingRequest({
+            channel: "whatsapp",
+            id: candidate,
+            meta: { name: (params.pushName ?? "").trim() || undefined },
+          });
+          if (created) {
+            // 给对方发配对码
+            await params.sock.sendMessage(params.remoteJid, {
+              text: buildPairingReply({
+                channel: "whatsapp",
+                idLine: `Your WhatsApp phone number: ${candidate}`,
+                code,
+              }),
+            });
+          }
+        }
+        // 拒绝这条消息
+        return { allowed: false, ... };
+      }
+    }
+  }
+
+  // 所有检查都通过了，允许这条消息
+  return { allowed: true, ... };
+}
+```
+
+这段代码太重要了，我帮你总结一下关键点：
+
+1. **默认 dmPolicy 是 "pairing"** —— 陌生人发消息会收到一个配对码，不会直接处理
+2. **allowFrom 白名单** —— 只有在白名单里的人才能发消息
+3. **默认只允许自己** —— 如果没配置白名单，默认只允许自己给自己发消息
+4. **群组也有策略** —— "open"、"disabled"、"allowlist" 三种
+
+这个安全设计很到位！
+
+### 4.3 Telegram 渠道：src/telegram/
+
+文件路径：`src/telegram/`
+
+Telegram 用的是 `grammy` 库。我翻了一下，它支持两种接收消息的方式：
+
+1. **Polling（轮询）** —— 定期去 Telegram 服务器问"有新消息吗？"
+2. **Webhook** —— Telegram 有新消息时主动推送给你
+
+这两种方式在代码里都有实现，分别在 `monitor.ts` 和 `webhook.ts` 里。
+
+### 4.4 其他渠道
+
+我简单翻了一下其他渠道：
+
+- **Slack**（`src/slack/`）：用 `@slack/bolt`，主要通过 Webhook 接收事件
+- **Discord**（`src/discord/`）：有自己的 Gateway（WebSocket）协议
+- **Signal**（`src/signal/`）：用 `signal-cli`，通过 SSE（Server-Sent Events）接收消息
+- **iMessage**（`src/imessage/`）：这个比较特殊，是通过监控本地数据库实现的！
+
+每个渠道的实现方式都不太一样，但都有一个共同点：都有访问控制机制。
+
+### 4.5 几个通用概念
+
+不管是哪个渠道，都有一些共同的概念：
+
+- **入站（Inbound）** —— 从渠道收到消息
+- **出站（Outbound）** —— 往渠道发送消息
+- **监控（Monitor）** —— 每个渠道都有一个 "monitor" 组件负责接收消息
+- **发送（Send）** —— 每个渠道都有 "send" 组件负责发送消息
+
+### 4.6 这章看完的感觉
+
+- 每个渠道都有独立的实现，但共享公共抽象
+- 不同渠道使用不同的通信方式：轮询、Webhook、WebSocket、SSE、本地文件监控等
+- 每个渠道都有访问控制机制（`allowFrom`、`dmPolicy` 等）
+- WhatsApp 是通过 WhatsApp Web 实现的，iMessage 是通过本地数据库实现的
+- 默认安全策略很严格：陌生人需要配对，不在白名单的消息会被忽略
+
+好，第四章就到这。下一章我们看看会话管理 —— 聊天记录存在哪？
