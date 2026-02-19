@@ -1,0 +1,363 @@
+#+TITLE: OpenClaw 代码乱读笔记（第二部分）
+#+AUTHOR: 某网友，闲得没事读代码玩儿
+#+DESCRIPTION: AI Agent、Memory、Skills 和插件系统
+
+* 第六章：AI Agent 是怎么工作的？—— Pi Embedded Runner 和系统提示词
+
+好了，前面我们看了 Gateway、渠道、安全这些，现在来看看最核心的部分：AI Agent 是怎么实现的？
+
+** 6.1 先看系统提示词：src/agents/system-prompt.ts
+
+文件路径：=src/agents/system-prompt.ts=
+
+每次跟 AI 对话，首先要给它一个系统提示词（System Prompt），告诉它它是谁、它能做什么、应该怎么回答。OpenClaw 的系统提示词是动态构建的，让我们看看代码：
+
+先看一个类型定义：
+
+#+BEGIN_SRC typescript
+/**
+ * Controls which hardcoded sections are included in the system prompt.
+ * - "full": All sections (default, for main agent)
+ * - "minimal": Reduced sections (Tooling, Workspace, Runtime) - used for subagents
+ * - "none": Just basic identity line, no sections
+ */
+export type PromptMode = "full" | "minimal" | "none";
+#+END_SRC
+
+三种模式：
+- =full= —— 完整的提示词（主代理用）
+- =minimal= —— 精简版（子代理用）
+- =none= —— 只有基本身份信息
+
+系统提示词是由多个部分组成的，让我们看看都有哪些部分：
+
+*** 6.1.1 Skills 部分
+
+#+BEGIN_SRC typescript
+function buildSkillsSection(params: {
+  skillsPrompt?: string;
+  isMinimal: boolean;
+  readToolName: string;
+}) {
+  if (params.isMinimal) {
+    return [];
+  }
+  const trimmed = params.skillsPrompt?.trim();
+  if (!trimmed) {
+    return [];
+  }
+  return [
+    "## Skills (mandatory)",
+    "Before replying: scan <available_skills> <description> entries.",
+    `- If exactly one skill clearly applies: read its SKILL.md at <location> with \`${params.readToolName}\`, then follow it.`,
+    "- If multiple could apply: choose the most specific one, then read/follow it.",
+    "- If none clearly apply: do not read any SKILL.md.",
+    "Constraints: never read more than one skill up front; only read after selecting.",
+    trimmed,
+    "",
+  ];
+}
+#+END_SRC
+
+哦，原来 Skills 是这样工作的！系统会告诉 AI：先看看有哪些可用的 Skills，如果有一个明显适用，就读它的 =SKILL.md=，然后照着做。
+
+*** 6.1.2 Memory 部分
+
+#+BEGIN_SRC typescript
+function buildMemorySection(params: {
+  isMinimal: boolean;
+  availableTools: Set<string>;
+  citationsMode?: MemoryCitationsMode;
+}) {
+  if (params.isMinimal) {
+    return [];
+  }
+  if (!params.availableTools.has("memory_search") && !params.availableTools.has("memory_get")) {
+    return [];
+  }
+  const lines = [
+    "## Memory Recall",
+    "Before answering anything about prior work, decisions, dates, people, preferences, or todos: run memory_search on MEMORY.md + memory/*.md; then use memory_get to pull only the needed lines. If low confidence after search, say you checked.",
+  ];
+  // ...
+}
+#+END_SRC
+
+Memory 部分告诉 AI：在回答关于之前的工作、决定、日期、人物、偏好或待办事项之前，先用 =memory_search= 搜索 =MEMORY.md= 和 =memory/*.md=，然后用 =memory_get= 取出需要的内容。
+
+*** 6.1.3 还有更多部分...
+
+这个文件还构建了其他部分：
+- =buildUserIdentitySection()= —— 用户身份
+- =buildTimeSection()= —— 当前日期和时间
+- =buildReplyTagsSection()= —— 回复标签
+- =buildMessagingSection()= —— 消息相关
+- =buildToolingSection()= —— 工具说明
+- =buildWorkspaceSection()= —— 工作区说明
+- =buildRuntimeSection()= —— 运行时说明
+- 等等...
+
+系统提示词就是把这些部分拼起来的！
+
+** 6.2 Pi Embedded Runner：src/agents/pi-embedded-runner/
+
+文件路径：=src/agents/pi-embedded-runner/=
+
+OpenClaw 用的是 =@mariozechner/pi-*= 这一套库来运行 AI Agent。这个目录里的代码就是把 Pi 集成到 OpenClaw 里的。
+
+简单来说，Pi 是一个嵌入式的 AI 代理运行时，负责：
+- 管理对话历史
+- 调用 AI 模型
+- 处理工具调用
+- 管理上下文窗口
+- 等等...
+
+这个目录里的文件挺多的，我们后面有机会再深挖。
+
+** 6.3 这章看完的感觉
+
+- 系统提示词是动态构建的，由多个部分组成
+- 有三种提示词模式：full、minimal、none
+- Skills 和 Memory 都有专门的提示词部分，告诉 AI 怎么用它们
+- Pi Embedded Runner 是核心的 AI 运行时
+
+好，第六章就到这。下一章我们看看 Memory 系统是怎么设计的 —— 这部分挺有意思的，用了向量数据库！
+
+* 第七章：Memory 系统 —— 用 SQLite + 向量搜索来做记忆
+
+这一章我们来看看 Memory 系统 —— OpenClaw 是怎么让 AI"记住"事情的？我翻了一下代码，发现它用了 SQLite 加上向量搜索，挺酷的！
+
+** 7.1 先看整体结构：src/memory/
+
+文件路径：=src/memory/=
+
+这个目录里文件真多，让我先列几个核心的：
+
+| 文件 | 功能 |
+|------|------|
+| =manager.ts= | MemoryIndexManager 类，核心管理类 |
+| =types.ts= | 类型定义 |
+| =sqlite.ts= / =sqlite-vec.ts= | SQLite 数据库相关 |
+| =embeddings.ts= / =embeddings-openai.ts= 等 | 嵌入向量相关 |
+| =hybrid.ts= | 混合搜索（向量 + 关键词） |
+| =manager-search.ts= | 搜索相关 |
+| =manager-embedding-ops.ts= | 嵌入向量操作 |
+| =manager-sync-ops.ts= | 同步操作 |
+
+核心是 =MemoryIndexManager= 这个类，在 =manager.ts= 里。
+
+** 7.2 MemoryIndexManager 类：src/memory/manager.ts
+
+文件路径：=src/memory/manager.ts=
+
+这个类是 Memory 系统的核心，让我们先看一眼它的结构（只列重要字段）：
+
+#+BEGIN_SRC typescript
+export class MemoryIndexManager implements MemorySearchManager {
+  private readonly cacheKey: string;
+  private readonly cfg: OpenClawConfig;
+  private readonly agentId: string;
+  private readonly workspaceDir: string;
+  private readonly settings: ResolvedMemorySearchConfig;
+  private provider: EmbeddingProvider;           // 嵌入向量提供者
+  private db: DatabaseSync;                      // SQLite 数据库
+  private readonly vector: {
+    enabled: boolean;
+    available: boolean | null;
+    extensionPath?: string;
+    loadError?: string;
+    dims?: number;
+  };
+  private readonly fts: {                     // FTS = Full-Text Search
+    enabled: boolean;
+    available: boolean;
+    loadError?: string;
+  };
+  private watcher: FSWatcher | null = null;   // 文件监听器
+  // ... 还有好多字段
+}
+#+END_SRC
+
+看到这些字段，我大概明白了：
+- 用 SQLite 存数据
+- 支持向量搜索（=vector= 字段）
+- 支持全文搜索（=fts= 字段）
+- 用 =chokidar= 监听文件变化
+- 支持多个嵌入向量提供者（OpenAI、Gemini、Voyage、本地等）
+
+** 7.3 数据库表：用了 sqlite-vec 扩展
+
+我看了一下代码，它用了 SQLite 加上 =sqlite-vec= 扩展来做向量搜索。数据库里有这几个关键表：
+
+| 表名 | 用途 |
+|------|------|
+| =chunks_vec= | 向量表，存文本块的嵌入向量 |
+| =chunks_fts= | FTS 表，全文搜索用 |
+| =embedding_cache= | 嵌入向量缓存，避免重复计算 |
+
+这个设计挺聪明的：
+- 向量搜索用来找语义相似的内容
+- 全文搜索用来找关键词匹配的内容
+- 两者结合起来就是"混合搜索"（Hybrid Search）
+
+** 7.4 嵌入向量提供者：src/memory/embeddings.ts
+
+文件路径：=src/memory/embeddings.ts=
+
+支持多个嵌入向量提供者：
+- OpenAI
+- Gemini
+- Voyage
+- 本地（Local）
+- Auto（自动选择）
+
+每个提供者都有对应的文件：
+- =embeddings-openai.ts=
+- =embeddings-gemini.ts=
+- =embeddings-voyage.ts=
+- =node-llama.ts=（本地）
+
+** 7.5 混合搜索：src/memory/hybrid.ts
+
+文件路径：=src/memory/hybrid.ts=
+
+混合搜索就是把向量搜索和全文搜索的结果合并起来。代码里有这些函数：
+- =bm25RankToScore()= —— BM25 排名转分数
+- =buildFtsQuery()= —— 构建 FTS 查询
+- =mergeHybridResults()= —— 合并混合搜索结果
+
+** 7.6 文件监听：自动同步
+
+我注意到 =MemoryIndexManager= 有一个 =watcher= 字段，是 =chokidar.FSWatcher= 类型。这意味着它会监听内存文件的变化，自动同步到数据库里！
+
+太酷了 —— 你修改 =MEMORY.md=，它会自动重新索引！
+
+** 7.7 这章看完的感觉
+
+- Memory 系统用 SQLite + sqlite-vec 扩展来做向量搜索
+- 支持混合搜索（向量 + 全文）
+- 支持多个嵌入向量提供者（OpenAI、Gemini、Voyage、本地）
+- 有文件监听，自动同步变化
+- 这个设计真的挺完善的
+
+好，第七章就到这。下一章我们看看 Skills 和插件系统 —— 这两个概念容易搞混，我们来理清楚！
+
+* 第八章：Skills 和插件系统 —— 它们是一回事吗？
+
+翻代码的时候我发现了两个目录：=skills/= 和 =extensions/=，还有 =src/plugins/=。这三个东西是啥关系？让我们来理一理！
+
+** 8.1 先看 Skills：skills/ 目录
+
+根目录下有个 =skills/= 文件夹，我数了一下，有 53 个目录！随便列几个：
+
+#+BEGIN_EXAMPLE
+skills/
+├── 1password/
+├── apple-notes/
+├── apple-reminders/
+├── bear-notes/
+├── blogwatcher/
+├── blucli/
+├── bluebubbles/
+├── camsnap/
+├── canvas/
+├── clawhub/
+├── coding-agent/
+├── discord/
+├── github/
+├── notion/
+└── ...（还有 40 多个）
+#+END_EXAMPLE
+
+每个 Skill 都是一个目录，里面通常有一个 =SKILL.md= 文件。这就是我们在第六章系统提示词里看到的那个 =SKILL.md=！
+
+Skill 是什么？简单来说，Skill 就是一个"操作指南"，告诉 AI 在特定场景下应该怎么做。它不是代码，是 Markdown 文档！
+
+** 8.2 再看插件系统：src/plugins/ 和 extensions/
+
+插件系统在两个地方：
+- =src/plugins/= —— 插件系统的核心代码
+- =extensions/= —— 具体的扩展（38 个目录）
+
+先看 =src/plugins/types.ts= 里的类型定义（我简化一下）：
+
+#+BEGIN_SRC typescript
+// 插件清单
+export type PluginManifest = {
+  id: string;
+  name: string;
+  version: string;
+  description?: string;
+  publisher?: string;
+  // 插件提供的工具
+  tools?: Array<PluginManifestTool>;
+  // 插件提供的 CLI 命令
+  commands?: Array<PluginManifestCommand>;
+  // 插件提供的服务
+  services?: Array<PluginManifestService>;
+  // ... 更多字段
+};
+#+END_SRC
+
+插件是什么？插件是代码！它可以：
+- 提供新的工具（Tools）
+- 提供新的 CLI 命令
+- 提供新的服务
+- 等等...
+
+** 8.3 Skill vs 插件：区别是什么？
+
+现在我搞明白了，两者的区别：
+
+| 特性 | Skill | 插件 |
+|------|-------|------|
+| 形式 | Markdown 文档（SKILL.md） | TypeScript/JavaScript 代码 |
+| 位置 | =skills/= 目录 | =extensions/= 目录 |
+| 作用 | 告诉 AI 怎么做（操作指南） | 给系统添加新功能（代码） |
+| 谁执行 | AI 阅读并遵循 | OpenClaw 加载并执行 |
+
+简单来说：
+- Skill 是给 AI 看的说明书
+- 插件是给 OpenClaw 用的扩展功能
+
+** 8.4 插件加载：src/plugins/loader.ts
+
+文件路径：=src/plugins/loader.ts=
+
+插件是怎么加载的？大概流程：
+1. 扫描插件目录
+2. 读取每个插件的 =manifest.json=
+3. 验证清单
+4. 加载插件代码
+5. 注册插件提供的工具、命令、服务等
+
+这个目录里还有很多其他文件：
+- =manifest.ts= —— 清单处理
+- =registry.ts= —— 插件注册表
+- =install.ts= / =uninstall.ts= —— 安装/卸载
+- =tools.ts= —— 插件工具
+- =commands.ts= —— 插件命令
+- =services.ts= —— 插件服务
+- 等等...
+
+** 8.5 这章看完的感觉
+
+- Skill 是 Markdown 文档，给 AI 看的操作指南
+- 插件是代码，给 OpenClaw 用的扩展功能
+- 两者完全不同，别搞混了！
+- 插件系统设计得挺完善的，有清单、注册表、安装/卸载等
+
+好，第八章就到这。这两部分（Skill 和插件）容易搞混，现在理清楚了！
+
+* 第二部分暂时写到这里
+
+好，第二部分我又写了三章：
+1. AI Agent 系统提示词和 Pi Embedded Runner
+2. Memory 系统（SQLite + 向量搜索）
+3. Skills 和插件系统的区别
+
+这三章内容挺多的，涉及了 AI 代理、记忆系统、Skills、插件这些核心概念。
+
+如果你想让我继续写后面的章节（会话管理、定时任务、节点系统、配置系统、测试等），随时告诉我！
+
+Happy hacking!
