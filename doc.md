@@ -787,4 +787,149 @@ Telegram 用的是 `grammy` 库。我翻了一下，它支持两种接收消息�
 - WhatsApp 是通过 WhatsApp Web 实现的，iMessage 是通过本地数据库实现的
 - 默认安全策略很严格：陌生人需要配对，不在白名单的消息会被忽略
 
-好，第四章就到这。下一章我们看看会话管理 —— 聊天记录存在哪？
+好，第四章就到这。这一章我们不看会话管理了，先看一个更重要的：安全审计工具。
+
+---
+
+## 第五章：安全审计工具 —— `openclaw security audit` 是怎么实现的？
+
+我翻代码的时候发现了一个好东西：`src/security/` 目录。OpenClaw 居然自带了安全审计工具！这章我们专门看这个。
+
+### 5.1 先看审计结果类型
+
+文件路径：`src/security/audit.ts`
+
+先看类型定义，能知道审计都检查什么：
+
+```typescript
+export type SecurityAuditSeverity = "info" | "warn" | "critical";
+
+export type SecurityAuditFinding = {
+  checkId: string;
+  severity: SecurityAuditSeverity;  // 严重级别
+  title: string;
+  detail: string;
+  remediation?: string;             // 修复建议
+};
+
+export type SecurityAuditReport = {
+  ts: number;
+  summary: {
+    critical: number;
+    warn: number;
+    info: number;
+  };
+  findings: SecurityAuditFinding[];
+  deep?: {
+    gateway?: {
+      attempted: boolean;
+      url: string | null;
+      ok: boolean;
+      error: string | null;
+    };
+  };
+};
+```
+
+三个严重级别：
+- `info` —— 信息，没关系
+- `warn` —— 警告，最好改改
+- `critical` —— 严重，必须改！
+
+### 5.2 都检查哪些东西？
+
+我数了一下，检查项还挺多的。让我从代码里整理一下：
+
+#### 5.2.1 文件系统权限检查
+
+在 `collectFilesystemFindings()` 函数里，检查这些：
+
+| 检查项 | 严重级别 | 说明 |
+|--------|----------|------|
+| State dir is world-writable | critical | 状态目录所有人可写 |
+| State dir is group-writable | warn | 状态目录组用户可写 |
+| State dir is readable by others | warn | 状态目录其他人可读 |
+| Config file is writable by others | critical | 配置文件其他人可写 |
+| Config file is world-readable | critical | 配置文件所有人可读（可能包含 token！） |
+| Config file is group-readable | warn | 配置文件组用户可读 |
+
+**划重点：配置文件权限是 critical 级别的！** 因为配置文件里可能存着 API Key、Token 这些敏感信息。
+
+看这段代码：
+
+```typescript
+if (configPerms.worldWritable || configPerms.groupWritable) {
+  findings.push({
+    checkId: "fs.config.perms_writable",
+    severity: "critical",
+    title: "Config file is writable by others",
+    detail: `${formatPermissionDetail(params.configPath, configPerms)}; another user could change gateway/auth/tool policies.`,
+    remediation: formatPermissionRemediation({
+      targetPath: params.configPath,
+      perms: configPerms,
+      isDir: false,
+      posixMode: 0o600,  // ← 推荐权限：只有自己能读写
+      env: params.env,
+    }),
+  });
+}
+```
+
+推荐权限是 `0o600` —— 只有文件所有者能读写，这个很安全。
+
+#### 5.2.2 Gateway 配置检查
+
+在 `collectGatewayConfigFindings()` 函数里，检查这些：
+
+- Gateway bind mode —— 如果不是 loopback，会 warn
+- Gateway auth mode —— 如果是 none，会 critical！
+- Tailscale mode —— 如果是 funnel 但没有 password auth，会 critical
+- 等等...
+
+**又一个重点：如果 Gateway 认证模式是 none，是 critical 级别的！** 这相当于大门敞开。
+
+#### 5.2.3 还有更多检查项
+
+我看了一下 `audit-extra.ts`，还有这些检查：
+
+- `collectAttackSurfaceSummaryFindings()` —— 攻击面总结
+- `collectExposureMatrixFindings()` —— 暴露矩阵
+- `collectSecretsInConfigFindings()` —— 配置文件里有没有秘密
+- `collectModelHygieneFindings()` —— 模型卫生
+- `collectPluginsTrustFindings()` —— 插件信任
+- `collectInstalledSkillsCodeSafetyFindings()` —— 已安装技能的代码安全
+- `collectChannelSecurityFindings()` —— 渠道安全
+- 等等...
+
+检查项真的很全！
+
+### 5.3 怎么运行审计？
+
+看代码，审计是通过 `openclaw security audit` 命令运行的。如果你正在用 OpenClaw，记得定期跑一下这个命令！
+
+### 5.4 这章看完的感觉
+
+- OpenClaw 自带了很完善的安全审计工具
+- 文件系统权限检查很仔细，配置文件权限是 critical 级别的
+- Gateway 认证如果是 none，也是 critical 级别的
+- 检查项很全：文件系统、Gateway 配置、渠道安全、插件、技能等等
+- 建议：用 OpenClaw 的话，定期跑 `openclaw security audit` 看看有没有问题
+
+好，第五章就到这。这章看完我觉得 OpenClaw 的开发者还是很重视安全的，自带审计工具这一点就很不错。
+
+---
+
+## 暂时写到这里
+
+我已经写了五章了，包括：
+1. 项目结构概述
+2. Gateway 启动流程
+3. HTTP、WebSocket 和认证
+4. 渠道系统（WhatsApp、Telegram 等）
+5. 安全审计工具
+
+这篇笔记已经有 800 多行，大约 25000 字符了。希望这些内容对你有帮助！
+
+如果你想让我继续写后面的章节（会话管理、AI 代理、定时任务、插件系统、节点系统等），随时告诉我。
+
+Happy hacking!
