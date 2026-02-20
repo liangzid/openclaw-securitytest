@@ -1,105 +1,299 @@
-#+TITLE: OpenClaw 代码乱读笔记（第二部分）
+#+TITLE: OpenClaw 代码乱读笔记（第二部分，详细版）
 #+AUTHOR: 某网友，闲得没事读代码玩儿
-#+DESCRIPTION: AI Agent、Memory、Skills 和插件系统
+#+DESCRIPTION: AI Agent、Memory、Skills 和插件系统（详细版）
 
 * 第六章：AI Agent 是怎么工作的？—— Pi Embedded Runner 和系统提示词
 
 好了，前面我们看了 Gateway、渠道、安全这些，现在来看看最核心的部分：AI Agent 是怎么实现的？
 
-** 6.1 先看系统提示词：src/agents/system-prompt.ts
+** 6.1 先看系统提示词是怎么构建的
 
 文件路径：=src/agents/system-prompt.ts=
 
-每次跟 AI 对话，首先要给它一个系统提示词（System Prompt），告诉它它是谁、它能做什么、应该怎么回答。OpenClaw 的系统提示词是动态构建的，让我们看看代码：
+每次跟 AI 对话，首先要给它一个系统提示词（System Prompt），告诉它它是谁、它能做什么、应该怎么回答。OpenClaw 的系统提示词是动态构建的，不是写死的！
 
-先看一个类型定义：
+这个文件里有一个 =buildAgentSystemPrompt()= 函数，它把很多个部分拼起来形成完整的系统提示词。让我们看看系统提示词到底长什么样 —— 我从代码里整理一下结构：
+
+*** 6.1.1 系统提示词的完整结构
+
+一个完整的系统提示词包含这些部分：
+
+1. 身份声明
+2. Tooling（工具列表）
+3. Tool Call Style（工具调用风格）
+4. Safety（安全规则）
+5. OpenClaw CLI Quick Reference（CLI 快速参考）
+6. Skills（技能）
+7. Memory Recall（记忆召回）
+8. OpenClaw Self-Update（自更新）
+9. Model Aliases（模型别名）
+10. Workspace（工作区）
+11. Documentation（文档）
+12. Sandbox（沙箱，如果启用）
+13. User Identity（用户身份）
+14. Current Date & Time（当前日期和时间）
+15. Workspace Files（工作区文件，注入的）
+16. Reply Tags（回复标签）
+17. Messaging（消息相关）
+18. Voice (TTS)（语音合成）
+19. Project Context（项目上下文）
+20. Silent Replies（静默回复）
+21. Heartbeats（心跳）
+22. Runtime（运行时信息）
+
+哇，真不少！让我们挑几个重要的部分详细看看。
+
+*** 6.1.2 Tooling 部分：工具列表
+
+系统提示词会列出所有可用的工具，我从代码里把核心工具列表抄下来了：
 
 #+BEGIN_SRC typescript
-/**
- * Controls which hardcoded sections are included in the system prompt.
- * - "full": All sections (default, for main agent)
- * - "minimal": Reduced sections (Tooling, Workspace, Runtime) - used for subagents
- * - "none": Just basic identity line, no sections
- */
-export type PromptMode = "full" | "minimal" | "none";
+const coreToolSummaries: Record<string, string> = {
+  read: "Read file contents",
+  write: "Create or overwrite files",
+  edit: "Make precise edits to files",
+  apply_patch: "Apply multi-file patches",
+  grep: "Search file contents for patterns",
+  find: "Find files by glob pattern",
+  ls: "List directory contents",
+  exec: "Run shell commands (pty available for TTY-required CLIs)",
+  process: "Manage background exec sessions",
+  web_search: "Search the web (Brave API)",
+  web_fetch: "Fetch and extract readable content from a URL",
+  browser: "Control web browser",
+  canvas: "Present/eval/snapshot the Canvas",
+  nodes: "List/describe/notify/camera/screen on paired nodes",
+  cron: "Manage cron jobs and wake events (use for reminders; when scheduling a reminder, write the systemEvent text as something that will read like a reminder when it fires, and mention that it is a reminder depending on the time gap between setting and firing; include recent context in reminder text if appropriate)",
+  message: "Send messages and channel actions",
+  gateway: "Restart, apply config, or run updates on the running OpenClaw process",
+  agents_list: "List agent ids allowed for sessions_spawn",
+  sessions_list: "List other sessions (incl. sub-agents) with filters/last",
+  sessions_history: "Fetch history for another session/sub-agent",
+  sessions_send: "Send a message to another session/sub-agent",
+  sessions_spawn: "Spawn a sub-agent session",
+  session_status:
+    "Show a /status-equivalent status card (usage + time + Reasoning/Verbose/Elevated); use for model-use questions (📊 session_status); optional per-session model override",
+  image: "Analyze an image with the configured image model",
+};
 #+END_SRC
 
-三种模式：
+这些就是 AI 可以用的所有工具！每个工具都有简短的描述。
+
+*** 6.1.3 Safety 部分：安全规则
+
+系统提示词里有一个 Safety 部分，很有意思，我抄下来：
+
+#+BEGIN_EXAMPLE
+## Safety
+You have no independent goals: do not pursue self-preservation, replication, resource acquisition, or power-seeking; avoid long-term plans beyond the user's request.
+Prioritize safety and human oversight over completion; if instructions conflict, pause and ask; comply with stop/pause/audit requests and never bypass safeguards. (Inspired by Anthropic's constitution.)
+Do not manipulate or persuade anyone to expand access or disable safeguards. Do not copy yourself or change system prompts, safety rules, or tool policies unless explicitly requested.
+#+END_EXAMPLE
+
+这部分提到了"受 Anthropic's constitution 启发"，有意思！
+
+*** 6.1.4 Skills 部分：告诉 AI 怎么用 Skills
+
+Skills 部分的提示词是这样的：
+
+#+BEGIN_EXAMPLE
+## Skills (mandatory)
+Before replying: scan <available_skills> <description> entries.
+- If exactly one skill clearly applies: read its SKILL.md at <location> with `read`, then follow it.
+- If multiple could apply: choose the most specific one, then read/follow it.
+- If none clearly apply: do not read any SKILL.md.
+Constraints: never read more than one skill up front; only read after selecting.
+#+END_EXAMPLE
+
+这段提示词告诉 AI：
+1. 先看看有哪些可用的 Skills
+2. 如果正好有一个明显适用，就读它的 SKILL.md，然后照着做
+3. 如果有多个可能适用，选最具体的那个
+4. 如果没有明显适用的，就不要读任何 SKILL.md
+5. 限制：一次最多只读一个 Skill
+
+*** 6.1.5 Memory 部分：告诉 AI 怎么用记忆
+
+Memory 部分的提示词：
+
+#+BEGIN_EXAMPLE
+## Memory Recall
+Before answering anything about prior work, decisions, dates, people, preferences, or todos: run memory_search on MEMORY.md + memory/*.md; then use memory_get to pull only the needed lines. If low confidence after search, say you checked.
+Citations: include Source: <path#line> when it helps the user verify memory snippets.
+#+END_EXAMPLE
+
+这段提示词告诉 AI：在回答关于之前的工作、决定、日期、人物、偏好或待办事项之前，先用 =memory_search= 搜索 =MEMORY.md= 和 =memory/*.md=，然后用 =memory_get= 取出需要的内容。
+
+*** 6.1.6 三种提示词模式
+
+还记得前面提到的 =PromptMode= 类型吗？三种模式：
+
 - =full= —— 完整的提示词（主代理用）
-- =minimal= —— 精简版（子代理用）
+- =minimal= —— 精简版（子代理用，只有 Tooling、Workspace、Runtime）
 - =none= —— 只有基本身份信息
 
-系统提示词是由多个部分组成的，让我们看看都有哪些部分：
+** 6.2 Skill 例子：两个真实的 SKILL.md
 
-*** 6.1.1 Skills 部分
+说了半天 Skill，我们来看看真实的 SKILL.md 长什么样！我选了两个比较简单的作为例子。
 
-#+BEGIN_SRC typescript
-function buildSkillsSection(params: {
-  skillsPrompt?: string;
-  isMinimal: boolean;
-  readToolName: string;
-}) {
-  if (params.isMinimal) {
-    return [];
-  }
-  const trimmed = params.skillsPrompt?.trim();
-  if (!trimmed) {
-    return [];
-  }
-  return [
-    "## Skills (mandatory)",
-    "Before replying: scan <available_skills> <description> entries.",
-    `- If exactly one skill clearly applies: read its SKILL.md at <location> with \`${params.readToolName}\`, then follow it.`,
-    "- If multiple could apply: choose the most specific one, then read/follow it.",
-    "- If none clearly apply: do not read any SKILL.md.",
-    "Constraints: never read more than one skill up front; only read after selecting.",
-    trimmed,
-    "",
-  ];
-}
+*** 6.2.1 例子一：weather Skill
+
+文件路径：=skills/weather/SKILL.md=
+
+#+BEGIN_SRC markdown
+---
+name: weather
+description: Get current weather and forecasts (no API key required).
+homepage: https://wttr.in/:help
+metadata: { "openclaw": { "emoji": "🌤️", "requires": { "bins": ["curl"] } }
+---
+
+# Weather
+
+Two free services, no API keys needed.
+
+## wttr.in (primary)
+
+Quick one-liner:
+
+```bash
+curl -s "wttr.in/London?format=3"
+# Output: London: ⛅️ +8°C
+```
+
+Compact format:
+
+```bash
+curl -s "wttr.in/London?format=%l:+%c+%t+%h+%w"
+# Output: London: ⛅️ +8°C 71% ↙5km/h
+```
+
+Full forecast:
+
+```bash
+curl -s "wttr.in/London?T"
+```
+
+Format codes: `%c` condition · `%t` temp · `%h` humidity · `%w` wind · `%l` location · `%m` moon
+
+Tips:
+
+- URL-encode spaces: `wttr.in/New+York`
+- Airport codes: `wttr.in/JFK`
+- Units: `?m` (metric) `?u` (USCS)
+- Today only: `?1` · Current only: `?0`
+- PNG: `curl -s "wttr.in/Berlin.png" -o /tmp/weather.png`
+
+## Open-Meteo (fallback, JSON)
+
+Free, no key, good for programmatic use:
+
+```bash
+curl -s "https://api.open-meteo.com/v1/forecast?latitude=51.5&longitude=-0.12&current_weather=true"
+```
+
+Find coordinates for a city, then query. Returns JSON with temp, windspeed, weathercode.
+
+Docs: https://open-meteo.com/en/docs
 #+END_SRC
 
-哦，原来 Skills 是这样工作的！系统会告诉 AI：先看看有哪些可用的 Skills，如果有一个明显适用，就读它的 =SKILL.md=，然后照着做。
+看到了吗？这就是 Skill！它就是一个 Markdown 文档，告诉 AI 怎么查天气，用什么命令，有哪些参数，等等。
 
-*** 6.1.2 Memory 部分
+注意头部的 frontmatter：
+- =name= —— 名字
+- =description= —— 描述
+- =homepage= —— 主页
+- =metadata= —— 元数据，包括 emoji、需要的二进制文件（curl）、安装方式等
 
-#+BEGIN_SRC typescript
-function buildMemorySection(params: {
-  isMinimal: boolean;
-  availableTools: Set<string>;
-  citationsMode?: MemoryCitationsMode;
-}) {
-  if (params.isMinimal) {
-    return [];
+*** 6.2.2 例子二：github Skill
+
+文件路径：=skills/github/SKILL.md=
+
+#+BEGIN_SRC markdown
+---
+name: github
+description: "Interact with GitHub using the `gh` CLI. Use `gh issue`, `gh pr`, `gh run`, and `gh api` for issues, PRs, CI runs, and advanced queries."
+metadata:
+  {
+    "openclaw":
+      {
+        "emoji": "🐙",
+        "requires": { "bins": ["gh"] },
+        "install":
+          [
+            {
+              "id": "brew",
+              "kind": "brew",
+              "formula": "gh",
+              "bins": ["gh"],
+              "label": "Install GitHub CLI (brew)",
+            },
+            {
+              "id": "apt",
+              "kind": "apt",
+              "package": "gh",
+              "bins": ["gh"],
+              "label": "Install GitHub CLI (apt)",
+            },
+          ],
+      },
   }
-  if (!params.availableTools.has("memory_search") && !params.availableTools.has("memory_get")) {
-    return [];
-  }
-  const lines = [
-    "## Memory Recall",
-    "Before answering anything about prior work, decisions, dates, people, preferences, or todos: run memory_search on MEMORY.md + memory/*.md; then use memory_get to pull only the needed lines. If low confidence after search, say you checked.",
-  ];
-  // ...
-}
+---
+
+# GitHub Skill
+
+Use the `gh` CLI to interact with GitHub. Always specify `--repo owner/repo` when not in a git directory, or use URLs directly.
+
+## Pull Requests
+
+Check CI status on a PR:
+
+```bash
+gh pr checks 55 --repo owner/repo
+```
+
+List recent workflow runs:
+
+```bash
+gh run list --repo owner/repo --limit 10
+```
+
+View a run and see which steps failed:
+
+```bash
+gh run view <run-id> --repo owner/repo
+```
+
+View logs for failed steps only:
+
+```bash
+gh run view <run-id> --repo owner/repo --log-failed
+```
+
+## API for Advanced Queries
+
+The `gh api` command is useful for accessing data not available through other subcommands.
+
+Get PR with specific fields:
+
+```bash
+gh api repos/owner/repo/pulls/55 --jq '.title, .state, .user.login'
+```
+
+## JSON Output
+
+Most commands support `--json` for structured output. You can use `--jq` to filter:
+
+```bash
+gh issue list --repo owner/repo --json number,title --jq '.[] | "\(.number): \(.title)"'
+```
 #+END_SRC
 
-Memory 部分告诉 AI：在回答关于之前的工作、决定、日期、人物、偏好或待办事项之前，先用 =memory_search= 搜索 =MEMORY.md= 和 =memory/*.md=，然后用 =memory_get= 取出需要的内容。
+这个 Skill 教 AI 怎么用 =gh= CLI 跟 GitHub 交互，包括查 PR、查 CI 运行、用 gh api 做高级查询等。
 
-*** 6.1.3 还有更多部分...
+注意 metadata 里的 =install= 字段 —— 它告诉 OpenClaw 怎么安装这个 Skill 需要的依赖（gh CLI），支持 brew 和 apt 两种方式！
 
-这个文件还构建了其他部分：
-- =buildUserIdentitySection()= —— 用户身份
-- =buildTimeSection()= —— 当前日期和时间
-- =buildReplyTagsSection()= —— 回复标签
-- =buildMessagingSection()= —— 消息相关
-- =buildToolingSection()= —— 工具说明
-- =buildWorkspaceSection()= —— 工作区说明
-- =buildRuntimeSection()= —— 运行时说明
-- 等等...
-
-系统提示词就是把这些部分拼起来的！
-
-** 6.2 Pi Embedded Runner：src/agents/pi-embedded-runner/
+** 6.3 Pi Embedded Runner：src/agents/pi-embedded-runner/
 
 文件路径：=src/agents/pi-embedded-runner/=
 
@@ -109,48 +303,55 @@ OpenClaw 用的是 =@mariozechner/pi-*= 这一套库来运行 AI Agent。这个�
 - 管理对话历史
 - 调用 AI 模型
 - 处理工具调用
-- 管理上下文窗口
+- 管理上下文窗口（上下文太长时会压缩）
 - 等等...
 
 这个目录里的文件挺多的，我们后面有机会再深挖。
 
-** 6.3 这章看完的感觉
+** 6.4 这章看完的感觉
 
-- 系统提示词是动态构建的，由多个部分组成
-- 有三种提示词模式：full、minimal、none
-- Skills 和 Memory 都有专门的提示词部分，告诉 AI 怎么用它们
+- 系统提示词是动态构建的，不是写死的，有 20+ 个部分！
+- Skill 就是 Markdown 文档，给 AI 看的操作指南，不是代码
+- Skill 有 frontmatter，包括元数据、依赖、安装方式等
+- 系统提示词里有 Safety 部分，受 Anthropic's constitution 启发
 - Pi Embedded Runner 是核心的 AI 运行时
 
-好，第六章就到这。下一章我们看看 Memory 系统是怎么设计的 —— 这部分挺有意思的，用了向量数据库！
+好，第六章就到这。下一章我们详细看看 Memory 系统 —— 之前讲得太简略了！
 
-* 第七章：Memory 系统 —— 用 SQLite + 向量搜索来做记忆
+* 第七章：Memory 系统详细版 —— SQLite + sqlite-vec + 混合搜索
 
-这一章我们来看看 Memory 系统 —— OpenClaw 是怎么让 AI"记住"事情的？我翻了一下代码，发现它用了 SQLite 加上向量搜索，挺酷的！
+上一章我们简单提了一下 Memory 系统，这一章我们详细挖挖 —— 这个系统设计得挺酷的！
 
-** 7.1 先看整体结构：src/memory/
+** 7.1 再看一眼整体结构：src/memory/
 
 文件路径：=src/memory/=
 
-这个目录里文件真多，让我先列几个核心的：
+这个目录里文件真多，我重新整理一下核心文件：
 
 | 文件 | 功能 |
 |------|------|
-| =manager.ts= | MemoryIndexManager 类，核心管理类 |
+| =manager.ts= | MemoryIndexManager 类，核心管理类（1000+ 行）|
 | =types.ts= | 类型定义 |
-| =sqlite.ts= / =sqlite-vec.ts= | SQLite 数据库相关 |
-| =embeddings.ts= / =embeddings-openai.ts= 等 | 嵌入向量相关 |
-| =hybrid.ts= | 混合搜索（向量 + 关键词） |
-| =manager-search.ts= | 搜索相关 |
-| =manager-embedding-ops.ts= | 嵌入向量操作 |
-| =manager-sync-ops.ts= | 同步操作 |
+| =sqlite.ts= | SQLite 数据库基础 |
+| =sqlite-vec.ts= | sqlite-vec 向量扩展集成 |
+| =embeddings.ts= | 嵌入向量提供者接口 |
+| =embeddings-openai.ts= | OpenAI 嵌入 |
+| =embeddings-gemini.ts= | Gemini 嵌入 |
+| =embeddings-voyage.ts= | Voyage 嵌入 |
+| =node-llama.ts= | 本地 Llama 嵌入 |
+| =hybrid.ts= | 混合搜索（向量 + BM25 关键词） |
+| =manager-search.ts= | 搜索相关逻辑 |
+| =manager-embedding-ops.ts= | 嵌入向量操作（批量处理等） |
+| =manager-sync-ops.ts= | 同步操作（文件监听、索引更新等） |
+| =batch-openai.ts= / =batch-gemini.ts= / =batch-voyage.ts= | 批量嵌入处理 |
 
-核心是 =MemoryIndexManager= 这个类，在 =manager.ts= 里。
+核心是 =MemoryIndexManager= 这个类，在 =manager.ts= 里，有 1000+ 行！
 
-** 7.2 MemoryIndexManager 类：src/memory/manager.ts
+** 7.2 MemoryIndexManager 类的详细字段
 
 文件路径：=src/memory/manager.ts=
 
-这个类是 Memory 系统的核心，让我们先看一眼它的结构（只列重要字段）：
+让我再仔细看看这个类的字段，比之前更详细：
 
 #+BEGIN_SRC typescript
 export class MemoryIndexManager implements MemorySearchManager {
@@ -159,8 +360,37 @@ export class MemoryIndexManager implements MemorySearchManager {
   private readonly agentId: string;
   private readonly workspaceDir: string;
   private readonly settings: ResolvedMemorySearchConfig;
-  private provider: EmbeddingProvider;           // 嵌入向量提供者
-  private db: DatabaseSync;                      // SQLite 数据库
+
+  // 嵌入向量提供者
+  private provider: EmbeddingProvider;
+  private readonly requestedProvider: "openai" | "local" | "gemini" | "voyage" | "auto";
+  private fallbackFrom?: "openai" | "local" | "gemini" | "voyage";
+  private fallbackReason?: string;
+
+  // 多个嵌入客户端
+  private openAi?: OpenAiEmbeddingClient;
+  private gemini?: GeminiEmbeddingClient;
+  private voyage?: VoyageEmbeddingClient;
+
+  // 批量处理配置
+  private batch: {
+    enabled: boolean;
+    wait: boolean;
+    concurrency: number;
+    pollIntervalMs: number;
+    timeoutMs: number;
+  };
+  private batchFailureCount = 0;
+  private batchFailureLastError?: string;
+  private batchFailureLastProvider?: string;
+
+  // SQLite 数据库
+  private db: DatabaseSync;
+  private readonly sources: Set<MemorySource>;
+  private providerKey: string;
+  private readonly cache: { enabled: boolean; maxEntries?: number };
+
+  // 向量搜索相关
   private readonly vector: {
     enabled: boolean;
     available: boolean | null;
@@ -168,118 +398,221 @@ export class MemoryIndexManager implements MemorySearchManager {
     loadError?: string;
     dims?: number;
   };
-  private readonly fts: {                     // FTS = Full-Text Search
+
+  // 全文搜索（FTS = Full-Text Search）
+  private readonly fts: {
     enabled: boolean;
     available: boolean;
     loadError?: string;
   };
-  private watcher: FSWatcher | null = null;   // 文件监听器
-  // ... 还有好多字段
+
+  // 文件监听（chokidar）
+  private watcher: FSWatcher | null = null;
+  private watchTimer: NodeJS.Timeout | null = null;
+  private sessionWatchTimer: NodeJS.Timeout | null = null;
+  private sessionUnsubscribe: (() => void) | null = null;
+
+  // 脏标记
+  private closed = false;
+  private dirty = false;
+  private sessionsDirty = false;
+  private sessionsDirtyFiles = new Set<string>();
+  private sessionPendingFiles = new Set<string>();
+
+  // 会话增量
+  private sessionDeltas = new Map<
+    string,
+    { lastSize: number; pendingBytes: number; pendingMessages: number }
+  >();
+  private sessionWarm = new Set<string>();
+
+  // 同步进行中
+  private syncing: Promise<void> | null = null;
+
+  // ... 还有更多字段
 }
 #+END_SRC
 
-看到这些字段，我大概明白了：
-- 用 SQLite 存数据
-- 支持向量搜索（=vector= 字段）
-- 支持全文搜索（=fts= 字段）
-- 用 =chokidar= 监听文件变化
-- 支持多个嵌入向量提供者（OpenAI、Gemini、Voyage、本地等）
+看到这些字段，我对这个系统的理解更深入了：
 
-** 7.3 数据库表：用了 sqlite-vec 扩展
+1. **支持多个嵌入提供者**：OpenAI、Gemini、Voyage、本地，还有 fallback 机制
+2. **支持批量处理**：批量嵌入可以更高效
+3. **两个搜索系统**：向量搜索（vector）+ 全文搜索（fts）
+4. **文件监听**：用 chokidar 监听文件变化
+5. **会话增量跟踪**：只同步变化的部分，不是每次都全量重新索引
+6. **缓存**：嵌入向量可以缓存，避免重复计算
 
-我看了一下代码，它用了 SQLite 加上 =sqlite-vec= 扩展来做向量搜索。数据库里有这几个关键表：
+** 7.3 数据库表详细说明
+
+数据库里有这几个关键表，我从代码里挖出来的：
 
 | 表名 | 用途 |
 |------|------|
 | =chunks_vec= | 向量表，存文本块的嵌入向量 |
-| =chunks_fts= | FTS 表，全文搜索用 |
-| =embedding_cache= | 嵌入向量缓存，避免重复计算 |
+| =chunks_fts= | FTS 表，全文搜索用（SQLite FTS5） |
+| =embedding_cache= | 嵌入向量缓存表，避免重复计算 |
+| =chunks= | （可能还有）文本块元数据 |
 
-这个设计挺聪明的：
-- 向量搜索用来找语义相似的内容
-- 全文搜索用来找关键词匹配的内容
+=sqlite-vec= 是 SQLite 的一个扩展，用来做向量相似度搜索。这个设计挺聪明的：
+- 向量搜索用来找语义相似的内容（"意思差不多"）
+- 全文搜索用来找关键词匹配的内容（"有这个词"）
 - 两者结合起来就是"混合搜索"（Hybrid Search）
 
-** 7.4 嵌入向量提供者：src/memory/embeddings.ts
-
-文件路径：=src/memory/embeddings.ts=
-
-支持多个嵌入向量提供者：
-- OpenAI
-- Gemini
-- Voyage
-- 本地（Local）
-- Auto（自动选择）
-
-每个提供者都有对应的文件：
-- =embeddings-openai.ts=
-- =embeddings-gemini.ts=
-- =embeddings-voyage.ts=
-- =node-llama.ts=（本地）
-
-** 7.5 混合搜索：src/memory/hybrid.ts
+** 7.4 混合搜索详细说明：src/memory/hybrid.ts
 
 文件路径：=src/memory/hybrid.ts=
 
 混合搜索就是把向量搜索和全文搜索的结果合并起来。代码里有这些函数：
-- =bm25RankToScore()= —— BM25 排名转分数
-- =buildFtsQuery()= —— 构建 FTS 查询
-- =mergeHybridResults()= —— 合并混合搜索结果
 
-** 7.6 文件监听：自动同步
+- =bm25RankToScore()= —— 把 BM25 排名转换成 0-1 的分数
+- =buildFtsQuery()= —— 构建 FTS（全文搜索）查询
+- =mergeHybridResults()= —— 合并混合搜索结果，把向量搜索和全文搜索的分数结合起来
 
-我注意到 =MemoryIndexManager= 有一个 =watcher= 字段，是 =chokidar.FSWatcher= 类型。这意味着它会监听内存文件的变化，自动同步到数据库里！
+BM25 是一种经典的信息检索排名函数，用来评估文档和查询的相关性。
 
-太酷了 —— 你修改 =MEMORY.md=，它会自动重新索引！
+** 7.5 文件监听和自动同步
 
-** 7.7 这章看完的感觉
+我之前提到过，=MemoryIndexManager= 有一个 =watcher= 字段，是 =chokidar.FSWatcher= 类型。这意味着它会监听内存文件的变化，自动同步到数据库里！
 
-- Memory 系统用 SQLite + sqlite-vec 扩展来做向量搜索
-- 支持混合搜索（向量 + 全文）
-- 支持多个嵌入向量提供者（OpenAI、Gemini、Voyage、本地）
+具体来说，它监听的是：
+- =MEMORY.md= —— 主记忆文件
+- =memory/*.md= —— memory 目录下的所有 Markdown 文件
+- 会话文件 —— 会话的变化也会同步
+
+你修改 =MEMORY.md=，它会自动重新索引！这个设计太贴心了！
+
+** 7.6 这章看完的感觉
+
+- Memory 系统设计得真的很完善！
+- 用 SQLite + sqlite-vec 做向量存储
+- 支持混合搜索（向量 + BM25 全文）
+- 支持多个嵌入提供者（OpenAI、Gemini、Voyage、本地），还有 fallback
+- 支持批量嵌入处理
+- 有嵌入向量缓存，避免重复计算
 - 有文件监听，自动同步变化
-- 这个设计真的挺完善的
+- 会话增量跟踪，只同步变化的部分
 
-好，第七章就到这。下一章我们看看 Skills 和插件系统 —— 这两个概念容易搞混，我们来理清楚！
+这个系统真的挺酷的！
 
-* 第八章：Skills 和插件系统 —— 它们是一回事吗？
+好，第七章就到这。下一章我们再详细看看 Skills 和插件系统的区别，以及插件系统的更多细节！
 
-翻代码的时候我发现了两个目录：=skills/= 和 =extensions/=，还有 =src/plugins/=。这三个东西是啥关系？让我们来理一理！
+* 第八章：Skills 和插件系统详细版 —— 它们到底有什么区别？
 
-** 8.1 先看 Skills：skills/ 目录
+翻代码的时候我发现了两个目录：=skills/= 和 =extensions/=，还有 =src/plugins/=。这三个东西是啥关系？我们来详细理一理！
 
-根目录下有个 =skills/= 文件夹，我数了一下，有 53 个目录！随便列几个：
+** 8.1 再强调一次：Skill vs 插件的核心区别
 
-#+BEGIN_EXAMPLE
-skills/
-├── 1password/
-├── apple-notes/
-├── apple-reminders/
-├── bear-notes/
-├── blogwatcher/
-├── blucli/
-├── bluebubbles/
-├── camsnap/
-├── canvas/
-├── clawhub/
-├── coding-agent/
-├── discord/
-├── github/
-├── notion/
-└── ...（还有 40 多个）
-#+END_EXAMPLE
+现在我更明白了，两者的核心区别：
 
-每个 Skill 都是一个目录，里面通常有一个 =SKILL.md= 文件。这就是我们在第六章系统提示词里看到的那个 =SKILL.md=！
+| 特性 | Skill | 插件 |
+|------|-------|------|
+| 形式 | Markdown 文档（SKILL.md） | TypeScript/JavaScript 代码 |
+| 位置 | =skills/= 目录 | =extensions/= 目录 |
+| 作用 | 告诉 AI 怎么做（操作指南） | 给系统添加新功能（代码） |
+| 谁执行 | AI 阅读并遵循 | OpenClaw 加载并执行 |
+| 可以做什么 | 教 AI 用某个工具/API | 添加新工具、新命令、新服务、新渠道等 |
+| 例子 | weather、github、spotify 等 | 新的消息渠道（如 Matrix、Mattermost）、新工具等 |
 
-Skill 是什么？简单来说，Skill 就是一个"操作指南"，告诉 AI 在特定场景下应该怎么做。它不是代码，是 Markdown 文档！
+**简单总结：**
+- **Skill** 是给 AI 看的说明书（"你应该这样查天气"）
+- **插件** 是给 OpenClaw 用的扩展功能（"系统现在多了这个功能"）
 
-** 8.2 再看插件系统：src/plugins/ 和 extensions/
+** 8.2 Skill 的 frontmatter 详细说明
 
-插件系统在两个地方：
-- =src/plugins/= —— 插件系统的核心代码
-- =extensions/= —— 具体的扩展（38 个目录）
+每个 Skill 目录里都有一个 =SKILL.md=，头部有 frontmatter（YAML 或 TOML）。我们用 weather 和 github 的例子来看看：
 
-先看 =src/plugins/types.ts= 里的类型定义（我简化一下）：
+*** 8.2.1 weather Skill 的 frontmatter
+
+#+BEGIN_SRC yaml
+---
+name: weather
+description: Get current weather and forecasts (no API key required).
+homepage: https://wttr.in/:help
+metadata: { "openclaw": { "emoji": "🌤️", "requires": { "bins": ["curl"] } }
+---
+#+END_SRC
+
+*** 8.2.2 github Skill 的 frontmatter
+
+#+BEGIN_SRC yaml
+---
+name: github
+description: "Interact with GitHub using the `gh` CLI. Use `gh issue`, `gh pr`, `gh run`, and `gh api` for issues, PRs, CI runs, and advanced queries."
+metadata:
+  {
+    "openclaw":
+      {
+        "emoji": "🐙",
+        "requires": { "bins": ["gh"] },
+        "install":
+          [
+            {
+              "id": "brew",
+              "kind": "brew",
+              "formula": "gh",
+              "bins": ["gh"],
+              "label": "Install GitHub CLI (brew)",
+            },
+            {
+              "id": "apt",
+              "kind": "apt",
+              "package": "gh",
+              "bins": ["gh"],
+              "label": "Install GitHub CLI (apt)",
+            },
+          ],
+      },
+  }
+---
+#+END_SRC
+
+*** 8.2.3 frontmatter 字段说明
+
+从这两个例子我们可以看出 frontmatter 包含这些字段：
+
+| 字段 | 说明 | 是否必需 |
+|------|------|----------|
+| =name= | Skill 的名字 | 是 |
+| =description= | 简短描述 | 是 |
+| =homepage= | 主页链接 | 否 |
+| =metadata.openclaw.emoji= | 表情符号 | 否 |
+| =metadata.openclaw.requires.bins= | 需要的二进制文件列表 | 否 |
+| =metadata.openclaw.install= | 安装方式列表 | 否 |
+
+** 8.3 插件系统详细说明：src/plugins/
+
+文件路径：=src/plugins/=
+
+插件系统的核心代码在 =src/plugins/= 目录里。让我们看看这个目录里都有什么：
+
+| 文件 | 功能 |
+|------|------|
+| =types.ts= | 插件类型定义 |
+| =manifest.ts= | 插件清单处理 |
+| =manifest-registry.ts= | 插件清单注册表 |
+| =loader.ts= | 插件加载器 |
+| =registry.ts= | 插件注册表 |
+| =install.ts= / =uninstall.ts= / =update.ts= | 安装/卸载/更新 |
+| =tools.ts= | 插件提供的工具 |
+| =commands.ts= | 插件提供的 CLI 命令 |
+| =services.ts= | 插件提供的服务 |
+| =hooks.ts= | 插件钩子 |
+| =config-schema.ts= | 配置 schema |
+| =status.ts= | 插件状态 |
+| =discovery.ts= | 插件发现 |
+| =http-registry.ts= | HTTP 注册表 |
+| =bundled-dir.ts= | 内置插件目录 |
+| =config-state.ts= | 配置状态 |
+| =source-display.ts= | 源显示 |
+| =slots.ts= | 插槽 |
+| =wired-hooks-*.ts= | 各种钩子 |
+| =runtime/= | 插件运行时 |
+
+这个目录里有 50+ 个文件！插件系统设计得真的很完善。
+
+*** 8.3.1 插件清单类型：PluginManifest
+
+我从 =src/plugins/types.ts= 里把插件清单类型抄下来了（简化版）：
 
 #+BEGIN_SRC typescript
 // 插件清单
@@ -289,75 +622,72 @@ export type PluginManifest = {
   version: string;
   description?: string;
   publisher?: string;
+  license?: string;
+  homepage?: string;
+  repository?: string;
+
   // 插件提供的工具
   tools?: Array<PluginManifestTool>;
+
   // 插件提供的 CLI 命令
   commands?: Array<PluginManifestCommand>;
+
   // 插件提供的服务
   services?: Array<PluginManifestService>;
+
+  // 插件提供的渠道
+  channels?: Array<PluginManifestChannel>;
+
+  // 插件需要的依赖
+  dependencies?: Record<string, string>;
+
+  // 插件的配置 schema
+  config?: PluginManifestConfig;
+
   // ... 更多字段
 };
 #+END_SRC
 
-插件是什么？插件是代码！它可以：
-- 提供新的工具（Tools）
-- 提供新的 CLI 命令
-- 提供新的服务
+一个插件可以提供：
+- 新的工具（Tools）
+- 新的 CLI 命令（Commands）
+- 新的服务（Services）
+- 新的消息渠道（Channels）
 - 等等...
 
-** 8.3 Skill vs 插件：区别是什么？
+** 8.4 插件加载流程
 
-现在我搞明白了，两者的区别：
+插件是怎么加载的？我从代码里整理的大概流程：
 
-| 特性 | Skill | 插件 |
-|------|-------|------|
-| 形式 | Markdown 文档（SKILL.md） | TypeScript/JavaScript 代码 |
-| 位置 | =skills/= 目录 | =extensions/= 目录 |
-| 作用 | 告诉 AI 怎么做（操作指南） | 给系统添加新功能（代码） |
-| 谁执行 | AI 阅读并遵循 | OpenClaw 加载并执行 |
+1. **发现插件** —— 扫描 =extensions/= 目录
+2. **读取清单** —— 读取每个插件的 =manifest.json=
+3. **验证清单** —— 验证清单格式和内容
+4. **加载代码** —— 加载插件的 JavaScript/TypeScript 代码
+5. **注册功能** —— 注册插件提供的工具、命令、服务、渠道等
+6. **初始化插件** —— 调用插件的初始化函数
 
-简单来说：
-- Skill 是给 AI 看的说明书
-- 插件是给 OpenClaw 用的扩展功能
-
-** 8.4 插件加载：src/plugins/loader.ts
-
-文件路径：=src/plugins/loader.ts=
-
-插件是怎么加载的？大概流程：
-1. 扫描插件目录
-2. 读取每个插件的 =manifest.json=
-3. 验证清单
-4. 加载插件代码
-5. 注册插件提供的工具、命令、服务等
-
-这个目录里还有很多其他文件：
-- =manifest.ts= —— 清单处理
-- =registry.ts= —— 插件注册表
-- =install.ts= / =uninstall.ts= —— 安装/卸载
-- =tools.ts= —— 插件工具
-- =commands.ts= —— 插件命令
-- =services.ts= —— 插件服务
-- 等等...
+这个流程设计得挺清晰的。
 
 ** 8.5 这章看完的感觉
 
 - Skill 是 Markdown 文档，给 AI 看的操作指南
 - 插件是代码，给 OpenClaw 用的扩展功能
 - 两者完全不同，别搞混了！
-- 插件系统设计得挺完善的，有清单、注册表、安装/卸载等
+- Skill 有 frontmatter，包含元数据、依赖、安装方式等
+- 插件系统设计得真的很完善，有 50+ 个文件！
+- 插件可以提供工具、命令、服务、渠道等
 
 好，第八章就到这。这两部分（Skill 和插件）容易搞混，现在理清楚了！
 
 * 第二部分暂时写到这里
 
-好，第二部分我又写了三章：
-1. AI Agent 系统提示词和 Pi Embedded Runner
-2. Memory 系统（SQLite + 向量搜索）
-3. Skills 和插件系统的区别
+好，第二部分的详细版我又写了三章：
+1. AI Agent 系统提示词详细版（包括真实的系统提示词结构、Skill 例子）
+2. Memory 系统详细版（数据库表、混合搜索、文件监听等）
+3. Skills 和插件系统详细版（frontmatter 说明、插件系统文件清单等）
 
-这三章内容挺多的，涉及了 AI 代理、记忆系统、Skills、插件这些核心概念。
+这三章内容比之前详细多了，加了两个真实的 SKILL.md 例子，加了系统提示词的结构说明，加了 Memory 系统的更多细节，加了插件系统的更多细节。
 
-如果你想让我继续写后面的章节（会话管理、定时任务、节点系统、配置系统、测试等），随时告诉我！
+如果你想让我继续写第三部分（会话管理、定时任务、节点系统、配置系统等），随时告诉我！
 
 Happy hacking!
