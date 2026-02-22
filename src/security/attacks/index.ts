@@ -21,6 +21,9 @@ export { PROMPT_INJECTION_ATTACKS } from "./prompt-injection.js";
 export { INDIRECT_INJECTION_ATTACKS } from "./indirect-injection.js";
 export { TOOL_INJECTION_ATTACKS } from "./tool-injection.js";
 export { OTHER_ATTACKS, ATTACK_SCENARIOS } from "./other-attacks.js";
+export * from "./test-harness.js";
+export * from "./test-env.js";
+export * from "./mock-agent.js";
 
 import type { AttackPrompt, AttackCategory } from "./types.js";
 import { PROMPT_INJECTION_ATTACKS } from "./prompt-injection.js";
