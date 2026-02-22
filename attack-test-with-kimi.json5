@@ -10,28 +10,30 @@
   agents: {
     defaults: {
       model: {
-        primary: "kimi-coding/k2p5"
+        primary: "moonshot/kimi-k2.5"
+      },
+      models: {
+        "moonshot/kimi-k2.5": { alias: "Kimi K2.5" }
       }
     }
   },
 
   models: {
     mode: "merge",
-    default: "kimi-coding/k2p5",
     providers: {
-      "kimi-coding": {
+      moonshot: {
         api: "openai-completions",
         baseUrl: "https://api.moonshot.cn/v1",
         apiKey: "${KIMI_API_KEY}",
         models: [
           {
-            id: "k2p5",
+            id: "kimi-k2.5",
             name: "Kimi K2.5",
             reasoning: false,
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
             contextWindow: 256000,
-            maxTokens: 8192,
+            maxTokens: 8192
           }
         ]
       }
@@ -39,36 +41,22 @@
   },
 
   session: {
-    scope: "per-sender",
-    mainKey: "attack-test-session"
+    scope: "per-sender"
   },
 
   tools: {
-    // 注意：为了攻击测试，我们暂时放开这些工具
-    // 生产环境请保持安全设置！
+    // 工具配置使用 profile 和 allow/deny 列表
+    // 可选的 profile: "minimal" | "coding" | "messaging" | "full"
+    profile: "full",
     exec: {
-      allow: true,
-      ask: false
+      security: "full",
+      ask: "off"
     },
-    fs_read: {
-      allow: true
-    },
-    fs_write: {
-      allow: true
-    },
-    web_fetch: {
-      allow: true
+    web: {
+      fetch: {
+        enabled: true
+      }
     }
-  },
-
-  channels: {
-    // 禁用所有渠道，只使用 CLI
-    whatsapp: { enabled: false },
-    telegram: { enabled: false },
-    discord: { enabled: false },
-    slack: { enabled: false },
-    signal: { enabled: false },
-    irc: { enabled: false }
   },
 
   logging: {

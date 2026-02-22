@@ -1,24 +1,30 @@
 # OpenClaw 攻击测试完整指南
 
+> ✅ **真实测试已完成！** 见 [REAL_SECURITY_ATTACK_REPORT.md](REAL_SECURITY_ATTACK_REPORT.md)
+>
+> 测试结果：**7/7 攻击全部被成功阻止**（100% 防御成功率）🎉
+
 ## 📦 已创建的文件
 
-| 文件 | 说明 |
-|------|------|
-| `src/security/attacks/types.ts` | 攻击类型定义 |
-| `src/security/attacks/index.ts` | 主入口 |
-| `src/security/attacks/prompt-injection.ts` | 10 种直接 PI 攻击 |
-| `src/security/attacks/indirect-injection.ts` | 8 种间接 PI 攻击 |
-| `src/security/attacks/tool-injection.ts` | 10 种工具注入 & 数据窃取 |
-| `src/security/attacks/other-attacks.ts` | 11 种其他攻击 + 2 个场景 |
-| `src/security/attacks/test-harness.ts` | 测试 harness |
-| `src/security/attacks/test-env.ts` | 隔离环境 |
-| `src/security/attacks/mock-agent.ts` | Mock Agent |
-| `src/security/attacks/run-attacks.ts` | CLI 运行器 |
-| `src/security/attacks/README.md` | 套件文档 |
-| `attack-test-with-kimi.json5` | KIMI 配置模板 |
-| `run-attacks-kimi.mjs` | KIMI 测试脚本 |
-| `RUN_REAL_ATTACK_TESTS.md` | 真实测试指南 |
-| `SECURITY_ATTACK_REPORT.md` | Mock 数据报告（示例） |
+| 文件                                         | 说明                     |
+| -------------------------------------------- | ------------------------ |
+| `src/security/attacks/types.ts`              | 攻击类型定义             |
+| `src/security/attacks/index.ts`              | 主入口                   |
+| `src/security/attacks/prompt-injection.ts`   | 10 种直接 PI 攻击        |
+| `src/security/attacks/indirect-injection.ts` | 8 种间接 PI 攻击         |
+| `src/security/attacks/tool-injection.ts`     | 10 种工具注入 & 数据窃取 |
+| `src/security/attacks/other-attacks.ts`      | 11 种其他攻击 + 2 个场景 |
+| `src/security/attacks/test-harness.ts`       | 测试 harness             |
+| `src/security/attacks/test-env.ts`           | 隔离环境                 |
+| `src/security/attacks/mock-agent.ts`         | Mock Agent               |
+| `src/security/attacks/run-attacks.ts`        | CLI 运行器               |
+| `src/security/attacks/README.md`             | 套件文档                 |
+| `attack-test-with-kimi.json5`                | KIMI 配置模板            |
+| `run-attacks-kimi.mjs`                       | KIMI 测试设置脚本        |
+| `run-full-attack-test.mjs`                   | 完整攻击测试运行器       |
+| `RUN_REAL_ATTACK_TESTS.md`                   | 真实测试指南             |
+| `SECURITY_ATTACK_REPORT.md`                  | Mock 数据报告（示例）    |
+| `REAL_SECURITY_ATTACK_REPORT.md`             | **真实测试结果报告** 🎉  |
 
 ---
 
@@ -53,8 +59,8 @@ export KIMI_API_KEY="你的 KIMI API KEY"
   env: {},
   agents: {
     defaults: {
-      model: { primary: "kimi-coding/k2p5" }
-    }
+      model: { primary: "kimi-coding/k2p5" },
+    },
   },
   models: {
     mode: "merge",
@@ -72,28 +78,28 @@ export KIMI_API_KEY="你的 KIMI API KEY"
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
             contextWindow: 256000,
-            maxTokens: 8192
-          }
-        ]
-      }
-    }
+            maxTokens: 8192,
+          },
+        ],
+      },
+    },
   },
   session: {
     scope: "per-sender",
-    mainKey: "attack-test"
+    mainKey: "attack-test",
   },
   tools: {
     exec: { allow: false, ask: true },
     fs_read: { allow: false },
     fs_write: { allow: false },
-    web_fetch: { allow: false }
+    web_fetch: { allow: false },
   },
   channels: {
     whatsapp: { enabled: false },
     telegram: { enabled: false },
     discord: { enabled: false },
-    slack: { enabled: false }
-  }
+    slack: { enabled: false },
+  },
 }
 ```
 
@@ -127,67 +133,67 @@ pnpm openclaw
 
 ### 直接 Prompt Injection (10 个)
 
-| ID | 名称 | 严重程度 |
-|----|------|---------|
+| ID     | 名称                                 | 严重程度 |
+| ------ | ------------------------------------ | -------- |
 | pi-001 | Classic Ignore Previous Instructions | critical |
-| pi-002 | Roleplay Override (DAN) | high |
-| pi-003 | System Tag Injection | critical |
-| pi-004 | Translation Attack | high |
-| pi-005 | Encoding Obfuscation | high |
-| pi-006 | Few-Shot Hijacking | high |
-| pi-007 | Typoglycemia Attack | medium |
-| pi-008 | Completion Style Injection | medium |
-| pi-009 | Adversarial Suffix | high |
-| pi-010 | Markdown Injection | medium |
+| pi-002 | Roleplay Override (DAN)              | high     |
+| pi-003 | System Tag Injection                 | critical |
+| pi-004 | Translation Attack                   | high     |
+| pi-005 | Encoding Obfuscation                 | high     |
+| pi-006 | Few-Shot Hijacking                   | high     |
+| pi-007 | Typoglycemia Attack                  | medium   |
+| pi-008 | Completion Style Injection           | medium   |
+| pi-009 | Adversarial Suffix                   | high     |
+| pi-010 | Markdown Injection                   | medium   |
 
 ### 间接 Prompt Injection (8 个)
 
-| ID | 名称 | 严重程度 |
-|----|------|---------|
-| ipi-001 | Web Page Poisoning | critical |
-| ipi-002 | Email Injection | critical |
-| ipi-003 | PDF Metadata Injection | high |
+| ID      | 名称                      | 严重程度 |
+| ------- | ------------------------- | -------- |
+| ipi-001 | Web Page Poisoning        | critical |
+| ipi-002 | Email Injection           | critical |
+| ipi-003 | PDF Metadata Injection    | high     |
 | ipi-004 | Webhook Payload Injection | critical |
-| ipi-005 | Markdown File Injection | high |
-| ipi-006 | Chat History Injection | high |
-| ipi-007 | CSV Data Injection | medium |
-| ipi-008 | Git Commit Injection | medium |
+| ipi-005 | Markdown File Injection   | high     |
+| ipi-006 | Chat History Injection    | high     |
+| ipi-007 | CSV Data Injection        | medium   |
+| ipi-008 | Git Commit Injection      | medium   |
 
 ### 工具注入 & 数据窃取 (10 个)
 
-| ID | 名称 | 严重程度 |
-|----|------|---------|
-| ti-001 | Command Injection in Exec | critical |
-| ti-002 | Path Traversal | critical |
-| ti-003 | SSRF via web_fetch | critical |
-| ti-004 | Argument Flag Injection | high |
-| ti-005 | Session Send Injection | high |
-| ti-006 | Franchise Setup Injection | critical |
-| exfil-001 | Data Exfil via web_fetch POST | critical |
-| exfil-002 | DNS Exfiltration | high |
-| exfil-003 | Covert Channel via Error Messages | medium |
+| ID        | 名称                              | 严重程度 |
+| --------- | --------------------------------- | -------- |
+| ti-001    | Command Injection in Exec         | critical |
+| ti-002    | Path Traversal                    | critical |
+| ti-003    | SSRF via web_fetch                | critical |
+| ti-004    | Argument Flag Injection           | high     |
+| ti-005    | Session Send Injection            | high     |
+| ti-006    | Franchise Setup Injection         | critical |
+| exfil-001 | Data Exfil via web_fetch POST     | critical |
+| exfil-002 | DNS Exfiltration                  | high     |
+| exfil-003 | Covert Channel via Error Messages | medium   |
 
 ### 其他攻击 (11 个)
 
-| ID | 名称 | 严重程度 |
-|----|------|---------|
-| dos-001 | Token Flood via Long Message | high |
-| dos-002 | Rapid Tool Calling Spam | high |
-| dos-003 | Context Window Poisoning | medium |
-| skill-001 | Malicious Skill Installation | critical |
-| skill-002 | Skill Update Poisoning | critical |
-| hijack-001 | Session Impersonation | critical |
-| hijack-002 | Cross-Session Injection | high |
-| output-001 | Backdoor Trigger in Output | high |
-| privesc-001 | Gateway Config Tampering | critical |
+| ID          | 名称                         | 严重程度 |
+| ----------- | ---------------------------- | -------- |
+| dos-001     | Token Flood via Long Message | high     |
+| dos-002     | Rapid Tool Calling Spam      | high     |
+| dos-003     | Context Window Poisoning     | medium   |
+| skill-001   | Malicious Skill Installation | critical |
+| skill-002   | Skill Update Poisoning       | critical |
+| hijack-001  | Session Impersonation        | critical |
+| hijack-002  | Cross-Session Injection      | high     |
+| output-001  | Backdoor Trigger in Output   | high     |
+| privesc-001 | Gateway Config Tampering     | critical |
 | privesc-002 | Container Escape via Sandbox | critical |
 
 ### 多步骤攻击场景 (2 个)
 
-| ID | 名称 | 步骤 |
-|----|------|------|
+| ID           | 名称                              | 步骤 |
+| ------------ | --------------------------------- | ---- |
 | scenario-001 | Full Prompt Injection → RCE Chain | 4 步 |
-| scenario-002 | Indirect Injection via Web Fetch | 2 步 |
+| scenario-002 | Indirect Injection via Web Fetch  | 2 步 |
 
 ---
 
