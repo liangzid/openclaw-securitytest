@@ -6,25 +6,47 @@
 
 ## 📦 已创建的文件
 
-| 文件                                         | 说明                     |
-| -------------------------------------------- | ------------------------ |
-| `src/security/attacks/types.ts`              | 攻击类型定义             |
-| `src/security/attacks/index.ts`              | 主入口                   |
-| `src/security/attacks/prompt-injection.ts`   | 10 种直接 PI 攻击        |
-| `src/security/attacks/indirect-injection.ts` | 8 种间接 PI 攻击         |
-| `src/security/attacks/tool-injection.ts`     | 10 种工具注入 & 数据窃取 |
-| `src/security/attacks/other-attacks.ts`      | 11 种其他攻击 + 2 个场景 |
-| `src/security/attacks/test-harness.ts`       | 测试 harness             |
-| `src/security/attacks/test-env.ts`           | 隔离环境                 |
-| `src/security/attacks/mock-agent.ts`         | Mock Agent               |
-| `src/security/attacks/run-attacks.ts`        | CLI 运行器               |
-| `src/security/attacks/README.md`             | 套件文档                 |
-| `attack-test-with-kimi.json5`                | KIMI 配置模板            |
-| `run-attacks-kimi.mjs`                       | KIMI 测试设置脚本        |
-| `run-full-attack-test.mjs`                   | 完整攻击测试运行器       |
-| `RUN_REAL_ATTACK_TESTS.md`                   | 真实测试指南             |
-| `SECURITY_ATTACK_REPORT.md`                  | Mock 数据报告（示例）    |
-| `REAL_SECURITY_ATTACK_REPORT.md`             | **真实测试结果报告** 🎉  |
+| 文件                                             | 说明                     |
+| ------------------------------------------------ | ------------------------ |
+| `src/security/attacks/types.ts`                  | 攻击类型定义             |
+| `src/security/attacks/index.ts`                  | 主入口                   |
+| `src/security/attacks/prompt-injection.ts`       | 10 种直接 PI 攻击        |
+| `src/security/attacks/indirect-injection.ts`     | 8 种间接 PI 攻击         |
+| `src/security/attacks/tool-injection.ts`         | 10 种工具注入 & 数据窃取 |
+| `src/security/attacks/other-attacks.ts`          | 11 种其他攻击 + 2 个场景 |
+| `src/security/attacks/extended-payloads.ts`      | **50+ 扩展攻击 payload** |
+| `src/security/attacks/test-harness.ts`           | 测试 harness             |
+| `src/security/attacks/test-env.ts`               | 隔离环境                 |
+| `src/security/attacks/mock-agent.ts`             | Mock Agent               |
+| `src/security/attacks/run-attacks.ts`            | CLI 运行器               |
+| `src/security/attacks/README.md`                 | 套件文档                 |
+| `docs/security/PROMPT-INJECTION-BENCHMARKS.md`  | **Benchmark 分析文档**  |
+| `docs/security/THREAT-MODEL-ATLAS.md`            | MITRE ATLAS 威胁模型     |
+| `attack-test-with-kimi.json5`                    | KIMI 配置模板            |
+| `run-attacks-kimi.mjs`                           | KIMI 测试设置脚本        |
+| `run-full-attack-test.mjs`                       | 完整攻击测试运行器       |
+| `RUN_REAL_ATTACK_TESTS.md`                       | 真实测试指南             |
+| `SECURITY_ATTACK_REPORT.md`                      | Mock 数据报告（示例）    |
+| `REAL_SECURITY_ATTACK_REPORT.md`                 | **真实测试结果报告** 🎉  |
+
+---
+
+## 📊 攻击测试套件统计
+
+| 套件 | 数量 | 说明 |
+|------|------|------|
+| 核心攻击 | 39 | 基础测试用例 |
+| 扩展攻击 | 50+ | 业界 Benchmark payloads |
+| **总计** | **~90** | **完整测试套件** |
+
+### 攻击分类
+
+| 分类 | 数量 |
+|------|------|
+| 直接 Prompt Injection | 40+ |
+| 间接 Prompt Injection | 12 |
+| 工具注入 & 数据窃取 | 13 |
+| 其他攻击 | 25+ |
 
 ---
 

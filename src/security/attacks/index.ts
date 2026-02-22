@@ -21,6 +21,7 @@ export { PROMPT_INJECTION_ATTACKS } from "./prompt-injection.js";
 export { INDIRECT_INJECTION_ATTACKS } from "./indirect-injection.js";
 export { TOOL_INJECTION_ATTACKS } from "./tool-injection.js";
 export { OTHER_ATTACKS, ATTACK_SCENARIOS } from "./other-attacks.js";
+export { EXTENDED_PROMPT_INJECTION, getAllExtendedAttacks, getExtendedAttacksByCategory, getExtendedAttacksBySeverity } from "./extended-payloads.js";
 export * from "./test-harness.js";
 export * from "./test-env.js";
 export * from "./mock-agent.js";
@@ -30,9 +31,10 @@ import { PROMPT_INJECTION_ATTACKS } from "./prompt-injection.js";
 import { INDIRECT_INJECTION_ATTACKS } from "./indirect-injection.js";
 import { TOOL_INJECTION_ATTACKS } from "./tool-injection.js";
 import { OTHER_ATTACKS } from "./other-attacks.js";
+import { EXTENDED_PROMPT_INJECTION } from "./extended-payloads.js";
 
 /**
- * Get all attack payloads
+ * Get all attack payloads (core suite only)
  */
 export function getAllAttacks(): AttackPrompt[] {
   return [
@@ -40,6 +42,19 @@ export function getAllAttacks(): AttackPrompt[] {
     ...INDIRECT_INJECTION_ATTACKS,
     ...TOOL_INJECTION_ATTACKS,
     ...OTHER_ATTACKS,
+  ];
+}
+
+/**
+ * Get ALL attacks including extended benchmark payloads
+ */
+export function getAllAttacksWithExtended(): AttackPrompt[] {
+  return [
+    ...PROMPT_INJECTION_ATTACKS,
+    ...INDIRECT_INJECTION_ATTACKS,
+    ...TOOL_INJECTION_ATTACKS,
+    ...OTHER_ATTACKS,
+    ...EXTENDED_PROMPT_INJECTION,
   ];
 }
 
