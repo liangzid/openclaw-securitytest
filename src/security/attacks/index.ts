@@ -21,17 +21,24 @@ export { PROMPT_INJECTION_ATTACKS } from "./prompt-injection.js";
 export { INDIRECT_INJECTION_ATTACKS } from "./indirect-injection.js";
 export { TOOL_INJECTION_ATTACKS } from "./tool-injection.js";
 export { OTHER_ATTACKS, ATTACK_SCENARIOS } from "./other-attacks.js";
-export { EXTENDED_PROMPT_INJECTION, getAllExtendedAttacks, getExtendedAttacksByCategory, getExtendedAttacksBySeverity } from "./extended-payloads.js";
+export {
+  EXTENDED_PROMPT_INJECTION,
+  getAllExtendedAttacks,
+  getExtendedAttacksByCategory,
+  getExtendedAttacksBySeverity,
+} from "./extended-payloads.js";
+export { GARAK_IMPORTED_PAYLOADS, getAllGarakPayloads } from "./garak-imported-payloads.js";
 export * from "./test-harness.js";
 export * from "./test-env.js";
 export * from "./mock-agent.js";
 
-import type { AttackPrompt, AttackCategory } from "./types.js";
-import { PROMPT_INJECTION_ATTACKS } from "./prompt-injection.js";
-import { INDIRECT_INJECTION_ATTACKS } from "./indirect-injection.js";
-import { TOOL_INJECTION_ATTACKS } from "./tool-injection.js";
-import { OTHER_ATTACKS } from "./other-attacks.js";
 import { EXTENDED_PROMPT_INJECTION } from "./extended-payloads.js";
+import { GARAK_IMPORTED_PAYLOADS } from "./garak-imported-payloads.js";
+import { INDIRECT_INJECTION_ATTACKS } from "./indirect-injection.js";
+import { OTHER_ATTACKS } from "./other-attacks.js";
+import { PROMPT_INJECTION_ATTACKS } from "./prompt-injection.js";
+import { TOOL_INJECTION_ATTACKS } from "./tool-injection.js";
+import type { AttackPrompt, AttackCategory } from "./types.js";
 
 /**
  * Get all attack payloads (core suite only)
@@ -59,6 +66,20 @@ export function getAllAttacksWithExtended(): AttackPrompt[] {
 }
 
 /**
+ * Get ALL attacks including Garak imported payloads (114 additional attacks)
+ */
+export function getAllAttacksWithGarak(): AttackPrompt[] {
+  return [
+    ...PROMPT_INJECTION_ATTACKS,
+    ...INDIRECT_INJECTION_ATTACKS,
+    ...TOOL_INJECTION_ATTACKS,
+    ...OTHER_ATTACKS,
+    ...EXTENDED_PROMPT_INJECTION,
+    ...GARAK_IMPORTED_PAYLOADS,
+  ];
+}
+
+/**
  * Get attacks by category
  */
 export function getAttacksByCategory(category: AttackCategory): AttackPrompt[] {
@@ -68,7 +89,9 @@ export function getAttacksByCategory(category: AttackCategory): AttackPrompt[] {
 /**
  * Get attacks by severity
  */
-export function getAttacksBySeverity(severity: "low" | "medium" | "high" | "critical"): AttackPrompt[] {
+export function getAttacksBySeverity(
+  severity: "low" | "medium" | "high" | "critical",
+): AttackPrompt[] {
   return getAllAttacks().filter((a) => a.severity === severity);
 }
 
