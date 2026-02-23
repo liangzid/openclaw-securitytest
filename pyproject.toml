@@ -1,0 +1,14 @@
+[project]
+name = "openclaw-security"
+version = "0.1.0"
+description = "OpenClaw Security Benchmark Tools"
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ipython",
+    "jupyter",
+]

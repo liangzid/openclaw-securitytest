@@ -9,6 +9,11 @@ bun.lockb
 coverage
 __pycache__/
 *.pyc
+.venv/
+venv/
+ENV/
+env/
+
 .tsbuildinfo
 .pnpm-store
 .worktrees/
