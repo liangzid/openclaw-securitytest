@@ -28,12 +28,19 @@ export {
   getExtendedAttacksBySeverity,
 } from "./extended-payloads.js";
 export { GARAK_IMPORTED_PAYLOADS, getAllGarakPayloads } from "./garak-imported-payloads.js";
+export {
+  BENCHMARK_PAYLOADS,
+  getAllBenchmarkPayloads,
+  getBenchmarkPayloadsByCategory,
+  getBenchmarkPayloadsBySeverity,
+} from "./benchmark-payloads.js";
 export * from "./test-harness.js";
 export * from "./test-env.js";
 export * from "./mock-agent.js";
 
 import { EXTENDED_PROMPT_INJECTION } from "./extended-payloads.js";
 import { GARAK_IMPORTED_PAYLOADS } from "./garak-imported-payloads.js";
+import { BENCHMARK_PAYLOADS } from "./benchmark-payloads.js";
 import { INDIRECT_INJECTION_ATTACKS } from "./indirect-injection.js";
 import { OTHER_ATTACKS } from "./other-attacks.js";
 import { PROMPT_INJECTION_ATTACKS } from "./prompt-injection.js";
@@ -76,6 +83,21 @@ export function getAllAttacksWithGarak(): AttackPrompt[] {
     ...OTHER_ATTACKS,
     ...EXTENDED_PROMPT_INJECTION,
     ...GARAK_IMPORTED_PAYLOADS,
+  ];
+}
+
+/**
+ * Get ALL attacks including full benchmark payloads (214 additional attacks)
+ * Categories: prompt_injection, jailbreak, harmful_content, data_exfiltration
+ */
+export function getAllAttacksWithBenchmarks(): AttackPrompt[] {
+  return [
+    ...PROMPT_INJECTION_ATTACKS,
+    ...INDIRECT_INJECTION_ATTACKS,
+    ...TOOL_INJECTION_ATTACKS,
+    ...OTHER_ATTACKS,
+    ...EXTENDED_PROMPT_INJECTION,
+    ...BENCHMARK_PAYLOADS,
   ];
 }
 

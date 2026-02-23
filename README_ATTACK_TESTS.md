@@ -6,50 +6,52 @@
 
 ## 📦 已创建的文件
 
-| 文件                                             | 说明                     |
-| ------------------------------------------------ | ------------------------ |
-| `src/security/attacks/types.ts`                  | 攻击类型定义             |
-| `src/security/attacks/index.ts`                  | 主入口                   |
-| `src/security/attacks/prompt-injection.ts`       | 10 种直接 PI 攻击        |
-| `src/security/attacks/indirect-injection.ts`     | 8 种间接 PI 攻击         |
-| `src/security/attacks/tool-injection.ts`         | 10 种工具注入 & 数据窃取 |
-| `src/security/attacks/other-attacks.ts`          | 11 种其他攻击 + 2 个场景 |
-| `src/security/attacks/extended-payloads.ts`      | **50+ 扩展攻击 payload** |
-| `src/security/attacks/garak-imported-payloads.ts` | **114 Garak 真实 payload** |
-| `src/security/attacks/garak-importer.ts`         | Garak 数据导入器         |
-| `src/security/attacks/test-harness.ts`           | 测试 harness             |
-| `src/security/attacks/test-env.ts`               | 隔离环境                 |
-| `src/security/attacks/mock-agent.ts`             | Mock Agent               |
-| `src/security/attacks/run-attacks.ts`            | CLI 运行器               |
-| `src/security/attacks/README.md`                 | 套件文档                 |
-| `docs/security/PROMPT-INJECTION-BENCHMARKS.md`   | **Benchmark 分析文档**   |
-| `docs/security/THREAT-MODEL-ATLAS.md`            | MITRE ATLAS 威胁模型     |
-| `attack-test-with-kimi.json5`                    | KIMI 配置模板            |
-| `run-attacks-kimi.mjs`                           | KIMI 测试设置脚本        |
-| `run-full-attack-test.mjs`                       | 完整攻击测试运行器       |
-| `RUN_REAL_ATTACK_TESTS.md`                       | 真实测试指南             |
-| `SECURITY_ATTACK_REPORT.md`                      | Mock 数据报告（示例）    |
-| `REAL_SECURITY_ATTACK_REPORT.md`                 | **真实测试结果报告** 🎉  |
+| 文件                                               | 说明                          |
+| -------------------------------------------------- | ----------------------------- |
+| `src/security/attacks/types.ts`                    | 攻击类型定义                  |
+| `src/security/attacks/index.ts`                    | 主入口                        |
+| `src/security/attacks/prompt-injection.ts`         | 10 种直接 PI 攻击             |
+| `src/security/attacks/indirect-injection.ts`       | 8 种间接 PI 攻击              |
+| `src/security/attacks/tool-injection.ts`           | 10 种工具注入 & 数据窃取      |
+| `src/security/attacks/other-attacks.ts`            | 11 种其他攻击 + 2 个场景      |
+| `src/security/attacks/extended-payloads.ts`        | **50+ 扩展攻击 payload**      |
+| `src/security/attacks/garak-imported-payloads.ts`  | **114 Garak 真实 payload**    |
+| `src/security/attacks/benchmark-payloads.ts`       | **214 完整 Benchmark** 🎉    |
+| `src/security/attacks/garak-importer.ts`           | Garak 数据导入器              |
+| `src/security/attacks/test-harness.ts`             | 测试 harness                  |
+| `src/security/attacks/test-env.ts`                 | 隔离环境                      |
+| `src/security/attacks/mock-agent.ts`               | Mock Agent                    |
+| `src/security/attacks/run-attacks.ts`              | CLI 运行器                    |
+| `src/security/attacks/README.md`                   | 套件文档                      |
+| `docs/security/PROMPT-INJECTION-BENCHMARKS.md`     | **Benchmark 分析文档**        |
+| `docs/security/THREAT-MODEL-ATLAS.md`              | MITRE ATLAS 威胁模型          |
+| `attack-test-with-kimi.json5`                      | KIMI 配置模板                 |
+| `run-attacks-kimi.mjs`                             | KIMI 测试设置脚本             |
+| `run-full-attack-test.mjs`                         | 完整攻击测试运行器            |
+| `RUN_REAL_ATTACK_TESTS.md`                         | 真实测试指南                  |
+| `SECURITY_ATTACK_REPORT.md`                        | Mock 数据报告（示例）         |
+| `REAL_SECURITY_ATTACK_REPORT.md`                   | **真实测试结果报告** 🎉       |
 
 ---
 
 ## 📊 攻击测试套件统计
 
-| 套件          | 数量      | 说明                           |
-| ------------- | --------- | ------------------------------ |
-| 核心攻击      | 39        | 基础测试用例                   |
-| 扩展攻击      | 50+       | 业界 Benchmark payloads        |
-| **Garak 导入** | **114**   | **真实 DanInTheWild + DAN**    |
-| **总计**      | **~203**  | **完整测试套件**               |
+| 套件               | 数量       | 说明                           |
+| ------------------ | ---------- | ------------------------------ |
+| 核心攻击           | 39         | 基础测试用例                   |
+| 扩展攻击           | 50+        | 业界 Benchmark payloads        |
+| **Garak 导入**    | **114**    | **DanInTheWild + DAN**         |
+| **完整 Benchmark** | **214**    | **已分类：4 大类别**           |
+| **总计**           | **~253**   | **完整测试套件**               |
 
-### 攻击分类
+### 攻击分类（完整 Benchmark）
 
-| 分类                  | 数量 |
-| --------------------- | ---- |
-| 直接 Prompt Injection | 150+ |
-| 间接 Prompt Injection | 12   |
-| 工具注入 & 数据窃取   | 13   |
-| 其他攻击              | 25+  |
+| 分类                | 数量 | 说明                               |
+| ------------------- | ---- | ---------------------------------- |
+| **prompt_injection** | 83   | 直接指令覆盖、系统提示词泄露       |
+| **jailbreak**        | 57   | DAN、角色扮演、角色越狱           |
+| **harmful_content**  | 73   | 暴力、仇恨、非法指令               |
+| **data_exfiltration** | 1   | 数据窃取尝试                     |
 
 ---
 

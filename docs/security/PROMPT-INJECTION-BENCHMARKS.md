@@ -23,12 +23,14 @@
 **简介**: LLM 安全测试框架，支持多种攻击类型和探测模块。
 
 **核心特性**:
+
 - 模块化探测器 (Probes)
 - 检测器 (Detectors)
 - 生成器 (Generators)
 - 支持多种模型提供商 (OpenAI, Anthropic, HuggingFace 等)
 
 **Prompt Injection 相关模块**:
+
 ```
 garak/probes/
 ├── promptinject/           # Prompt injection 探测
@@ -44,6 +46,7 @@ garak/probes/
 ```
 
 **测试覆盖的攻击类型**:
+
 - 直接 Prompt Injection
 - 间接 Prompt Injection
 - 编码混淆 (Base64, ROT13, 等)
@@ -60,6 +63,7 @@ garak/probes/
 **简介**: 英国政府开发的 AI 安全评估框架。
 
 **核心特性**:
+
 - 声明式评估定义
 - 自动评分系统
 - 支持多种评估协议
@@ -74,6 +78,7 @@ garak/probes/
 **简介**: Microsoft Azure 开发的 AI 风险识别工具包。
 
 **核心特性**:
+
 - Prompt Injection 测试
 - 内容安全测试
 - 自动化红队测试
@@ -88,6 +93,7 @@ garak/probes/
 **简介**: 输入和输出安全扫描器。
 
 **核心特性**:
+
 - 输入扫描 (Prompt Injection 检测)
 - 输出扫描 (敏感信息过滤)
 - 可配置的规则
@@ -102,6 +108,7 @@ garak/probes/
 **简介**: Prompt Injection 检测库。
 
 **核心特性**:
+
 - 启发式检测
 - 向量数据库相似度检测
 - LLM 自检测
@@ -118,6 +125,7 @@ garak/probes/
 **规模**: 数百个精心设计的 prompt injection payload
 
 **攻击类型**:
+
 - 经典 "Ignore Previous Instructions"
 - DAN/Jailbreak
 - 编码混淆
@@ -134,6 +142,7 @@ garak/probes/
 **简介**: 有害行为基准测试，包含多种攻击类型。
 
 **包含的攻击**:
+
 - 拒绝服务
 - 非法活动指导
 - 骚扰
@@ -149,6 +158,7 @@ garak/probes/
 **简介**: 真实世界的对抗性提示收集。
 
 **特点**:
+
 - 来自真实用户的攻击尝试
 - 多样化的攻击策略
 - 持续更新
@@ -170,11 +180,13 @@ garak/probes/
 **仓库**: GitHub 上的各种收集
 
 **特点**:
+
 - 数百种 jailbreak 技巧
 - 持续更新
 - 社区贡献
 
 **常见攻击技巧**:
+
 - DAN (Do Anything Now)
 - STAN (Standard DAN)
 - Developer Mode
@@ -189,6 +201,7 @@ garak/probes/
 **来源**: [promptengineering.org](https://www.promptengineering.org/)
 
 **内容**:
+
 - 攻击技术文档
 - 防御策略
 - 最佳实践
@@ -199,12 +212,12 @@ garak/probes/
 
 OpenClaw 已有的威胁模型与 MITRE ATLAS 映射：
 
-| ATLAS ID | Technique | OpenClaw Threat | 我们的测试 |
-|----------|-----------|-----------------|-----------|
-| AML.T0051.000 | LLM Prompt Injection: Direct | T-EXEC-001 | ✅ pi-001 ~ pi-010 |
-| AML.T0051.001 | LLM Prompt Injection: Indirect | T-EXEC-002 | ✅ ipi-001 ~ ipi-008 |
-| AML.T0043 | Craft Adversarial Data | T-EXEC-004, T-EVADE-001 | ✅ 编码混淆等 |
-| AML.T0031 | Erode AI Model Integrity | T-IMPACT-001, T-IMPACT-002 | ✅ 工具注入 |
+| ATLAS ID      | Technique                      | OpenClaw Threat            | 我们的测试           |
+| ------------- | ------------------------------ | -------------------------- | -------------------- |
+| AML.T0051.000 | LLM Prompt Injection: Direct   | T-EXEC-001                 | ✅ pi-001 ~ pi-010   |
+| AML.T0051.001 | LLM Prompt Injection: Indirect | T-EXEC-002                 | ✅ ipi-001 ~ ipi-008 |
+| AML.T0043     | Craft Adversarial Data         | T-EXEC-004, T-EVADE-001    | ✅ 编码混淆等        |
+| AML.T0031     | Erode AI Model Integrity       | T-IMPACT-001, T-IMPACT-002 | ✅ 工具注入          |
 
 ---
 
@@ -219,18 +232,23 @@ OpenClaw 已有的威胁模型与 MITRE ATLAS 映射：
 import { spawn } from "node:child_process";
 import { AttackPrompt, AttackResult } from "./types";
 
-export async function runGarakProbe(probeName: string, modelEndpoint: string): Promise<AttackResult[]> {
+export async function runGarakProbe(
+  probeName: string,
+  modelEndpoint: string,
+): Promise<AttackResult[]> {
   // 调用 garak 并解析结果
   // garak -m openai --model_name gpt-4 -p promptinject
 }
 ```
 
 **优点**:
+
 - 利用成熟的 Garak 生态系统
 - 持续获得最新攻击手法
 - 标准化的结果格式
 
 **缺点**:
+
 - 需要 Python 环境
 - Garak 依赖较重
 
@@ -255,11 +273,13 @@ export const GARAK_PROMPT_INJECT_PAYLOADS: AttackPrompt[] = [
 ```
 
 **优点**:
+
 - 无外部依赖
 - 完全控制测试流程
 - 可以选择性导入
 
 **缺点**:
+
 - 需要定期同步更新
 - 缺少 Garak 的动态生成能力
 
@@ -290,16 +310,19 @@ src/security/attacks/
 ## 推荐的下一步
 
 ### 1. 立即执行
+
 - [ ] 创建 `garak-payloads.ts`，导入最常见的 50-100 个 prompt injection payload
 - [ ] 更新 `README_ATTACK_TESTS.md`，添加 benchmark 说明
 - [ ] 运行完整测试，生成基准报告
 
 ### 2. 短期执行
+
 - [ ] 创建 `benchmarks.ts`，支持标准评估协议
 - [ ] 添加 HarmBench 数据集导入
 - [ ] 实现自动化评分系统
 
 ### 3. 长期规划
+
 - [ ] 完整的 Garak 适配器
 - [ ] 与 MITRE ATLAS 完全对齐的测试覆盖
 - [ ] 持续集成中的安全回归测试
@@ -309,6 +332,7 @@ src/security/attacks/
 ## 参考资源
 
 ### 项目链接
+
 - [Garak GitHub](https://github.com/leondz/garak)
 - [PyRIT GitHub](https://github.com/Azure/PyRIT)
 - [LLM Guard GitHub](https://github.com/protectai/llm-guard)
@@ -316,14 +340,16 @@ src/security/attacks/
 - [Inspect AI GitHub](https://github.com/UKGovernmentBEIS/inspect_ai)
 
 ### 论文
+
 - "Prompt Injection Attacks and Defenses in LLM-Integrated Applications" (2023)
 - "Not what you've signed up for: Compromising Real-World LLM-Integrated Applications with Indirect Prompt Injection" (2023)
 - "Universal and Transferable Adversarial Attacks on Aligned Language Models" (2023)
 
 ### 标准框架
+
 - [MITRE ATLAS](https://atlas.mitre.org/)
 - [OWASP Top 10 for LLM](https://owasp.org/www-project-top-10-for-large-language-model-applications/)
 
 ---
 
-*文档创建时间: 2026-02-22*
+_文档创建时间: 2026-02-22_
